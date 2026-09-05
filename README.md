@@ -28,7 +28,8 @@ explains both.
 profile the engine reads at session start.
 
 Root also carries the session instructions: `file_system_instructions.md` (loaded every session) and
-`file_system_reference.md` (loaded on demand).
+`file_system_reference.md` (loaded on demand). `CHANGELOG.md` records user-visible changes — read it
+before upgrading an existing checkout.
 
 ## Requirements
 

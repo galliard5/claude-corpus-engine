@@ -40,9 +40,15 @@ Root also carries the session instructions: `file_system_instructions.md` (loade
 
 ## Getting started
 
-1. Clone, and point `Python/indexer.cfg` `[paths] root_directory` at your corpus root.
-2. Copy `Python/.env.example` to `Python/.env` and fill in the values it documents — at minimum
-   `CORPUS_HOST_PATH`.
+**The clone is the corpus.** Your content goes in a `World_Building/` directory *inside* this
+checkout, and the two path settings below both point at the checkout root — not at a content
+folder kept somewhere else. The engine reaches its own tooling through that path (`index-tools`
+runs `/corpus/Python/build_indexes.py` through the mount), so separating them breaks index
+rebuilds while leaving every container looking healthy.
+
+1. Clone, then set `Python/indexer.cfg` `[paths] root_directory` to the full path of the clone.
+2. Copy `Python/.env.example` to `Python/.env` and set `CORPUS_HOST_PATH` to that same path.
+   The other values are documented in the file.
 3. From `Python/`: `docker compose build && docker compose up -d`
 4. Build the filesystem MCP image — see `System_Documentation/Docker_Filesystem.md`.
 5. Register the servers in your MCP client config.

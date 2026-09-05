@@ -4,7 +4,7 @@ keywords: [rules, instructions, reference]
 description: Core project rules and procedures for every session
 ---
 
-> **Last edited (UTC):** 2026-09-05T02:44:00Z
+> **Last edited (UTC):** 2026-09-05T02:57:00Z
 > Held in the body rather than the frontmatter so it survives the copy-paste into the
 > claude.ai project-instructions field, where frontmatter is discarded. Bump on every edit.
 
@@ -312,8 +312,8 @@ A custom MCP server (`Python/series_search_mcp_server.py`) exposes FTS5 search o
 - `"heavy plasma"` — exact phrase (plain words only — no hyphens or dots inside quotes)
 - `dreadnought OR frigate` — either term
 - `mech*` — prefix match (mech, mechs, mechanical)
-- `M318` or `"M 318"` — hyphenated designations: drop the hyphen or use a quoted phrase with a space. Bare `M-318` parses as `M NOT 318`.
-- `Vas tir` — dot-separated names: split on the dot (`Vas.tir` won't tokenize correctly)
+- `X318` or `"X 318"` — hyphenated designations: drop the hyphen or use a quoted phrase with a space. Bare `X-318` parses as `X NOT 318`.
+- `Vel nir` — dot-separated names: split on the dot (`Vel.nir` won't tokenize correctly)
 
 **`series` filter:** narrows to one series within a merged database. Valid values depend on which database is mounted — see the profile. The `db` parameter accepts any corpus-relative path to a compatible `.db`, useful for single-series queries.
 

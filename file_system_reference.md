@@ -5,7 +5,7 @@ description: Supplementary procedures, tool schemas, and standards — load on d
 schemas_verified_utc: 2026-09-05T02:00:00Z
 ---
 
-> **Last edited (UTC):** 2026-09-05T02:44:00Z
+> **Last edited (UTC):** 2026-09-05T02:57:00Z
 > Held in the body rather than the frontmatter so it survives a copy-paste into a
 > project-instructions field, where frontmatter is discarded. Bump on every edit.
 
@@ -303,8 +303,8 @@ params:
 - `"heavy plasma"` — exact phrase (plain words only)
 - `dreadnought OR frigate` — either term
 - `mech*` — prefix match (mech, mechs, mechanical)
-- `M318` or `"M 318"` — hyphenated designations: drop the hyphen or use a quoted phrase with a space. Bare `M-318` parses as `M NOT 318`.
-- `Vas tir` — dot-separated names: split on the dot (`Vas.tir` won't tokenize correctly)
+- `X318` or `"X 318"` — hyphenated designations: drop the hyphen or use a quoted phrase with a space. Bare `X-318` parses as `X NOT 318`.
+- `Vel nir` — dot-separated names: split on the dot (`Vel.nir` won't tokenize correctly)
 
 ### `series-search:get_chapter`
 Full text of a chapter by exact `chapter_num` match.

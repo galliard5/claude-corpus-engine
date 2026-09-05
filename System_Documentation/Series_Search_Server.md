@@ -69,8 +69,8 @@ FTS5 keyword search across `chapter_num`, `title`, `arc`, `character`, and `cont
 | `dreadnought OR frigate` | Either term                                                      |
 | `dreadnought NOT derelict` | Exclusion                                                      |
 | `mech*`                  | Prefix match (mech, mechs, mechanical, mechanised)               |
-| `M318` or `"M 318"`      | Hyphenated designation — drop hyphen or use phrase with space    |
-| `Vas tir`                | Dot-separated name — split on the dot                            |
+| `X318` or `"X 318"`      | Hyphenated designation — drop hyphen or use phrase with space    |
+| `Vel nir`                | Dot-separated name — split on the dot                            |
 
 **`series` — filter to one series:**
 Valid values are whatever `series` identifiers the mounted database actually contains — call `list_series` to see them. Only works when the database has a `series` column (i.e. a merged multi-series build). Ignored for single-series databases.

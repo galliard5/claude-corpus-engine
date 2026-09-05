@@ -1,0 +1,61 @@
+claude-corpus-engine
+Copyright 2026 galliard5
+
+Licensed under the Apache License, Version 2.0 (the "License"). You may obtain a
+copy of the License in the LICENSE file distributed with this work, or at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software distributed
+under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR
+CONDITIONS OF ANY KIND, either express or implied. See the License for the
+specific language governing permissions and limitations under the License.
+
+If you redistribute this work, or a derivative work based on it, Apache-2.0
+section 4(d) requires you to carry the attribution notices in this file forward
+into your distribution. This applies to the prose as much as the code: the
+gamemaster rules layer and the filesystem conventions are the parts most likely
+to be adapted rather than copied, and they are covered by the same licence.
+
+
+-------------------------------------------------------------------------------
+Third-party components
+-------------------------------------------------------------------------------
+
+No third-party code is bundled in this repository. Nothing in this section
+imposes an obligation on you, and none of it is redistributed here — it is
+recorded so a reader can see what the stack depends on without reading the
+Dockerfiles and requirements file.
+
+Fetched from public registries during the Docker build, each under its own
+licence:
+
+  @modelcontextprotocol/server-filesystem
+      npm; version pinned in Python/filesystem-mcp/Dockerfile.
+      Published by Model Context Protocol, a Series of LF Projects, LLC.
+      The package declares "SEE LICENSE IN LICENSE" rather than a named
+      licence — consult the upstream project for its terms.
+
+  mcp (Python SDK)                MIT
+  PyYAML                          MIT
+  sqlite-vec                      MIT or Apache-2.0 (dual)   [optional]
+  fastembed                       Apache-2.0                 [optional]
+
+      pip; versions pinned in Python/requirements.txt. The two marked
+      [optional] provide the semantic vector search lane; without them the
+      index builder and search server fall back to full-text only.
+
+  BAAI/bge-small-en-v1.5
+      Embedding model, downloaded on first build when the vector lane is
+      enabled. See the model card for its terms.
+
+Connected separately by the operator. Not included here, not required to run
+this software, and listed only because documentation in this repository refers
+to them:
+
+  sympy-mcp          Apache-2.0   https://github.com/sdiehl/sympy-mcp
+  dice-rolling-mcp   ISC          https://github.com/jimmcq/dice-rolling-mcp
+
+Licence identifiers above were read from the projects' own published metadata
+on 2026-09-05. They are recorded in good faith and may change upstream; the
+authoritative statement for any component is that project's own licence file.

@@ -89,7 +89,7 @@ A few decisions that aren't obvious from the code:
 
 ## Licence
 
-Apache-2.0. See `LICENSE`.
+Apache-2.0. See `LICENSE` for the full text and `NOTICE` for attribution.
 
 Attribution is required for reuse, including in derivative works — that's Apache §4 rather than
 the weaker notice-retention of MIT, chosen deliberately because the rules layer is the part most

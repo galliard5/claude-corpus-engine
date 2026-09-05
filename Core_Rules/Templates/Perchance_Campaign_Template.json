@@ -1,0 +1,259 @@
+{
+  "genre": "[Campaign Genre - e.g., Dark Fantasy, Urban Fantasy, Sci-Fi]",
+  "tone": "[Narrative tone - e.g., Gritty, Epic, Comedic]",
+  "techEra": "[Tech level - e.g., Medieval/Pre-Industrial, Industrial, Post-Apocalyptic]",
+  "magicSystem": "[Magic type - e.g., High Fantasy/Mana-based, Low Magic, Magitech]",
+  "currency": "[Currency system - e.g., Gold, Silver, Copper coins]",
+  "govt": "[Government type - e.g., Feudal Monarchy, Republic, Oligarchy]",
+  "calendar": "[Calendar system - e.g., Standard 365-day year, 12 months, 4 seasons]",
+  "worldContext": "[Brief setting summary - 1-2 sentences describing the world state, conflicts, atmosphere]",
+  "maxParagraphs": 10,
+  "streamText": true,
+  "statCheckTemplate": "Stat: Name - Needed: Number, Had: Number - Result",
+  "statCheckAppearance": {
+    "bgColor": "#252525",
+    "borderColor": "#3a3a3a",
+    "titleColor": "#ffd700",
+    "contentColor": "#b8b8b8",
+    "successColor": "#66bb6a",
+    "failureColor": "#ef5350",
+    "labels": {
+      "stat": "Stat",
+      "needed": "Needed",
+      "had": "You have",
+      "result": "RESULT"
+    }
+  },
+  "uiStyle": {
+    "bgColor": "#1a1a1a",
+    "useGradient": false,
+    "gradientColor": "#2a2a2a",
+    "gradientDirection": "to bottom",
+    "fontFamily": "sans-serif",
+    "fontColor": "#e0e0e0",
+    "fontSize": 14,
+    "accentColor": "#da3633",
+    "borderColor": "#333333",
+    "cardBg": "#252525"
+  },
+  "storyModeAppearance": {
+    "fontFamily": "'Crimson Text', serif",
+    "fontSize": 17,
+    "bgColor": "#0a0a0a",
+    "textColor": "#c4c4c4",
+    "playerColor": "#64b5f6",
+    "gmColor": "#e57373"
+  },
+  "charGenConfig": {
+    "statMin": 8,
+    "statMax": 18,
+    "portraitStyle": "Realistic Digital Art",
+    "bioLength": "Standard (2 paragraphs)"
+  },
+  "inventoryConfig": {
+    "sortOrder": "name",
+    "displayMode": "grid",
+    "maxCapacity": 0
+  },
+  "systemConfig": {
+    "autoSaveInterval": 1
+  },
+  "narratorConfig": {
+    "name": "[GM/Narrator Name]",
+    "style": "[Style - e.g., Descriptive, Conversational, Mythic]",
+    "instructions": "[Key narrator directives]\n[e.g., dont make choices for the player]\n[stop at a decision point and give the player some choices]\n"
+  },
+  "playerCharacter": {
+    "name": "[Character Name]",
+    "race": "[Race]",
+    "class": "[Class/Role]",
+    "stats": {
+      "str": 10,
+      "dex": 10,
+      "con": 10,
+      "int": 10,
+      "wis": 10,
+      "cha": 10
+    },
+    "image": "",
+    "bio": "[Character background - 1-2 sentences describing origin, motivations, key traits]"
+  },
+  "worldData": {
+    "items": [
+      {
+        "id": 0,
+        "category": "items",
+        "details": {
+          "name": "[Item Name]",
+          "icon": "[Emoji]",
+          "color": "[Hex Color]",
+          "type": "[Type - e.g., Weapon, Tool, Artifact]",
+          "rarity": "[Rarity - e.g., Common, Uncommon, Rare, Legendary]",
+          "concept": "[One-line concept]",
+          "description": "[Detailed description including mechanical effects, narrative significance, quirks]",
+          "relationships": ""
+        }
+      }
+    ],
+    "locations": [
+      {
+        "id": 0,
+        "category": "locations",
+        "details": {
+          "name": "[Location Name]",
+          "icon": "[Emoji]",
+          "color": "[Hex Color]",
+          "type": "[Type - e.g., Town, Dungeon, Wilderness, Manor]",
+          "climate": "[Climate/Atmosphere description]",
+          "population": "[Population description - e.g., 'None living, though shadows stalk', 'approx 500 mixed folk']",
+          "inhabited": true,
+          "civilized": true,
+          "description": "[Rich location description including geography, factions present, key landmarks, atmosphere, secrets]",
+          "relationships": ""
+        }
+      }
+    ],
+    "factions": [
+      {
+        "id": 0,
+        "category": "factions",
+        "details": {
+          "name": "[Faction Name]",
+          "icon": "[Emoji]",
+          "color": "[Hex Color]",
+          "alignment": "[Alignment - e.g., Lawful Good, Chaotic Evil, Other]",
+          "leader": "[Leader Name and Title]",
+          "goal": "[Faction's primary goal]",
+          "description": "[Faction description including membership, practices, beliefs, reputation]",
+          "relationships": ""
+        }
+      }
+    ],
+    "npcs": [
+      {
+        "id": 0,
+        "category": "npcs",
+        "details": {
+          "name": "[NPC Name]",
+          "icon": "[Emoji]",
+          "color": "[Hex Color]",
+          "role": "[Role/Title]",
+          "race": "[Race]",
+          "personality": "[Personality traits and behavioral quirks]",
+          "appearance": "[Physical description]",
+          "description": "[Background, motivations, secrets, connection to world events]",
+          "relationships": ""
+        }
+      }
+    ],
+    "religions": [
+      {
+        "id": 0,
+        "category": "religions",
+        "details": {
+          "name": "[Religion/Philosophy Name]",
+          "icon": "[Emoji]",
+          "color": "[Hex Color]",
+          "type": "[Type - e.g., Religion, Mystery Cult, Philosophy]",
+          "deities": "[Deity/Deities or core belief object]",
+          "coreBeliefs": "[Summary of core tenets]",
+          "practices": "[Religious practices and rituals]",
+          "structure": "[Organizational hierarchy and authority structure]",
+          "description": "[History, influence, relationship to world events]",
+          "relationships": ""
+        }
+      }
+    ],
+    "magic": [
+      {
+        "id": 0,
+        "category": "magic",
+        "details": {
+          "name": "[Magic System Element]",
+          "type": "[Type - e.g., Source, School of Magic, Spell, Technique]",
+          "era": "[Era when discovered/created]",
+          "rarity": "[Rarity or commonality]",
+          "description": "[How it works, what it does, limitations or dangers]",
+          "icon": "[Emoji]",
+          "color": "[Hex Color]"
+        }
+      }
+    ],
+    "transportation": [
+      {
+        "id": 0,
+        "category": "transportation",
+        "details": {
+          "name": "[Transport Type]",
+          "type": "[Type - e.g., General Use, Unique, In Development]",
+          "description": "[How it works, availability, speed, limitations]",
+          "icon": "[Emoji]",
+          "color": "[Hex Color]"
+        }
+      }
+    ],
+    "technology": [
+      {
+        "id": 0,
+        "category": "technology",
+        "details": {
+          "name": "[Technology Name]",
+          "type": "[Type - e.g., Energy Production, Manufacturing, Weapon]",
+          "era": "[Era of development]",
+          "rarity": "[How common/rare]",
+          "description": "[How it works, who uses it, impact on society]",
+          "icon": "[Emoji]",
+          "color": "[Hex Color]"
+        }
+      }
+    ],
+    "languages": [
+      {
+        "id": 0,
+        "category": "languages",
+        "details": {
+          "name": "[Language Name]",
+          "type": "[Type - e.g., Trade Language, Ancient Language, Native Language]",
+          "speakers": "[Who speaks it]",
+          "script": "[Type of script or writing system]",
+          "description": "[Grammar notes, cultural significance, learning difficulty]",
+          "icon": "[Emoji]",
+          "color": "[Hex Color]"
+        }
+      }
+    ],
+    "events": [
+      {
+        "id": 0,
+        "category": "events",
+        "details": {
+          "name": "[Event Name]",
+          "icon": "[Emoji]",
+          "color": "[Hex Color]",
+          "time": "[When it occurred or is occurring]",
+          "type": "[Type - e.g., Current, Omen, Historical]",
+          "consequences": "[What changed/is changing due to this event]",
+          "description": "[Detailed narrative of the event, sensory details, world impact]",
+          "relationships": ""
+        }
+      }
+    ],
+    "lore": [
+      {
+        "id": 0,
+        "category": "lore",
+        "details": {
+          "name": "[Lore Title]",
+          "icon": "[Emoji]",
+          "color": "[Hex Color]",
+          "type": "[Type - e.g., History, Secret, Legend, Creation Myth]",
+          "time": "[When this occurred in world history]",
+          "description": "[The lore content - detailed narrative explaining historical events, secrets, or legendary tales]",
+          "relationships": ""
+        }
+      }
+    ]
+  },
+  "inventory": [],
+  "storyHistory": []
+}

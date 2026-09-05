@@ -1,0 +1,24 @@
+# Requirements for the custom Python MCP servers:
+#   search_mcp_server.py
+#   index_tools_mcp_server.py
+#   build_indexes.py (called as a subprocess by index_tools_mcp_server.py)
+#
+# Direct dependencies only — transitive deps are resolved by pip at install time.
+#
+# Note: mcp lists pywin32 as a dependency, but it is a conditional Windows-only
+# package (sys_platform == "win32"). pip on Linux skips it automatically.
+# No action needed, but don't be surprised if you see it mentioned during builds.
+
+# MCP Python SDK — provides FastMCP, stdio and HTTP transports
+mcp==1.27.0
+
+# YAML parser — used by build_indexes.py for frontmatter extraction
+PyYAML==6.0.3
+
+# --- Optional: semantic / hybrid vector-search lane (embedding.py) ---
+# If these are absent, build_indexes.py skips the vector index and
+# search_mcp_server.py falls back to fts-only — no errors. Adding them enables
+# mode="vector" and mode="hybrid". fastembed pulls onnxruntime (CPU) and
+# downloads a ~90MB model (BAAI/bge-small-en-v1.5) on first use.
+sqlite-vec==0.1.9
+fastembed==0.8.0

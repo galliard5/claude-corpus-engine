@@ -1,0 +1,11 @@
+{
+  "recommendations": [
+    "yzhang.markdown-all-in-one",
+    "shd101wyy.markdown-preview-enhanced",
+    "bpruitt-goddard.mermaid-markdown-syntax-highlighting",
+    "GitHub.vscode-pull-request-github",
+    "mhutchie.git-graph",
+    "aaron-bond.better-comments"
+  ],
+  "unwantedRecommendations": []
+}

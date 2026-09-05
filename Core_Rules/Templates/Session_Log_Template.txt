@@ -1,0 +1,97 @@
+---
+name: Session Log Template
+type: template
+keywords: [template, session, log, summary, campaign]
+description: Full-detail session log template for post-session documentation - despite the name, a summary format rather than a verbatim record
+---
+
+> NOTE: despite the name, this is a **summary** template, not a verbatim record.
+> For the raw transcript layer see `Session_Transcript_Stub.md`.
+
+# [Session Name/Number/Date]
+
+**Campaign:** [Campaign Name]
+**Date Played:** [Date]
+**Players Present:** [List of characters]
+**Session Recap:**
+
+[2-3 sentence summary of what happened]
+
+---
+
+## Key Events
+
+### [Event 1 Title]
+[Description of what happened, who was involved, and consequences]
+
+### [Event 2 Title]
+[Description]
+
+### [Event 3 Title]
+[Description]
+
+---
+
+## NPCs Encountered
+- [[NPC_Name|Display]] — [How they were involved]
+- [[NPC_Name|Display]] — [How they were involved]
+
+---
+
+## Locations Visited
+- [[Location_Name]] — [What happened here]
+- [[Location_Name]] — [What happened here]
+
+---
+
+## Decisions & Consequences
+
+**Decision 1:** [What the party decided]
+- *Consequence:* [What resulted from this decision]
+
+**Decision 2:** [What the party decided]
+- *Consequence:* [What resulted]
+
+---
+
+## Character Development
+
+**[Character Name]:**
+[How did this character grow, change, or learn something? Any character arcs advanced?]
+
+**[Character Name]:**
+[Character development notes]
+
+---
+
+## Plot Hooks for Next Session
+
+- [Unresolved plot thread 1]
+- [Unresolved plot thread 2]
+- [External complication or threat]
+
+---
+
+## Mechanics Notes
+
+**Rewards Granted:**
+- [Gold, items, experience, etc.]
+
+**Inventory Changes:**
+- [Items acquired]
+- [Items used/consumed]
+
+**Experience/Advancement:**
+[Any level-ups, milestone achievements, skill increases?]
+
+---
+
+## DM Notes
+
+[Session pacing, what worked well, what to adjust, foreshadowing planted, future plot considerations]
+
+---
+
+## Next Steps
+
+[What should happen between sessions? What are the next logical story beats?]

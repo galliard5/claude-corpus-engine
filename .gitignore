@@ -1,0 +1,74 @@
+# .gitignore — claude-corpus-engine
+#
+# This repository is the engine: filesystem conventions, GM rules, indexer and
+# MCP servers. It deliberately carries no worldbuilding content. Everything
+# excluded below is either private content, a derived artifact, machine-local,
+# or a working document.
+
+# --- Private content (carved out to its own repository at the 2026-09-04 split) ---
+# World_Building/ is ignored wholesale. An earlier design shipped an empty
+# scaffold plus World_Building/README.md via a negation; that is impossible here.
+# World_Building/ is itself a git repository (the private content half), and git
+# will not track a file inside a nested repository — `git add -f` on it silently
+# stages nothing. Git cannot track empty directories either, so there is no
+# scaffold to ship. The orientation document lives at the root instead, as
+# World_Building_README.md, which this repository can actually carry.
+/World_Building/
+/Writing_Projects/
+/Stories/
+/Perchance_prompts/
+/Other_References/
+/Miscelanious_RPG_material/
+/Sheet_Import/
+/Trash/
+
+# --- Derived artifacts (regenerable; never track) ---
+/index/
+Python/filesystem-mcp/UPDATE_STATUS.txt
+.fastembed_cache/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# --- Local / machine-specific ---
+.env
+.obsidian/
+Thumbs.db
+desktop.ini
+.DS_Store
+*.lnk
+
+# --- Private-side root documents ---
+# These sit at the root because their tools require it, or because they predate
+# the split. Root is now the engine repository, so "not for publication" only
+# holds if they are named here. Setting-name hit counts from the 2026-09-04
+# sweep are in the comments.
+#
+# NB: .gitignore has no inline comments — a trailing "# ..." becomes part of the
+# pattern, silently matching nothing. Comments go above the line, never beside it.
+#
+# [4]  Codex requires it at the workspace root; its Purpose section names both
+#      settings. A sanitized template is a possible later addition.
+/AGENTS.md
+# [49] Stale, and largely duplicates claude.ai userMemories.
+/Claude_Code_Context.md
+# [12] Belongs with Writing_Projects/, which is also private.
+/Creative_Writing_Skills_Override.md
+# [4]  Despite the name this is a fully populated save, not a skeleton: a
+#      complete setting dump plus an in-progress story. Not a usable template.
+/Core_Rules/Templates/template.ai-story.json
+
+# --- Working documents: handoffs, proposals, plans. Contents never published. ---
+# Ships the directory and its README, nothing else — same shape as World_Building.
+# A directory rule rather than per-file entries, deliberately: a new handoff
+# written here is excluded by default. The per-file version failed open — anything
+# nobody remembered to list shipped.
+#
+# Use bare `*`, not `*.*`: `*.*` matches only names containing a dot, so a
+# subdirectory such as Working_Documents/archive/ would not match, git would
+# descend into it, and its contents would ship. Match the case exactly too — a
+# lowercase negation appears to work where core.ignorecase is true, then inverts
+# on a case-sensitive filesystem, hiding the README and publishing everything else.
+/Working_Documents/*
+!/Working_Documents/README.md

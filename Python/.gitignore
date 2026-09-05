@@ -1,0 +1,10 @@
+.env
+__pycache__/
+*.pyc
+*.pyo
+
+# Derived artifact from the filesystem MCP update checker
+filesystem-mcp/UPDATE_STATUS.txt
+
+# Persistent fastembed model cache for host runs (~90 MB, see embedding.py)
+.fastembed_cache/

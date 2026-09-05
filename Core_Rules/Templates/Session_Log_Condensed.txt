@@ -1,0 +1,86 @@
+---
+name: Session Log Condensed
+type: template
+keywords: [template, session, log, summary, condensed]
+description: Streamlined session log template for faster post-session documentation - use when you want proper formatting but don't need the full template's detail level
+---
+
+> NOTE: despite the name, this is a **summary** template, not a verbatim record.
+> For the raw transcript layer see `Session_Transcript_Stub.md`.
+
+# [Session Name/Date]
+
+**Campaign:** [Campaign Name]  
+**In-Game Date:** [Date/Day]  
+**Played:** [Date]  
+**PC:** [Character Name]  
+
+---
+
+## Summary
+
+[2-3 sentence recap of the core story beats]
+
+---
+
+## Key Events
+
+[Bullet-point list of major plot developments]
+- Event 1
+- Event 2
+- Event 3
+
+---
+
+## Decisions & Consequences
+
+[What did the PC choose? What happened as a result?]
+
+**[Decision Title]:** [What the PC decided] → [Consequence]
+
+---
+
+## NPCs & Interactions
+
+[Quick reference of who appeared and how they reacted]
+
+- **[[NPC_Name]]** — [Their role/action in this session]
+- **[[NPC_Name]]** — [Their role/action in this session]
+
+---
+
+## Character Status
+
+**Applied:** [Statuses applied during session]  
+**Resolved:** [Statuses that cleared]  
+**Current:** [Active statuses carried forward]
+
+---
+
+## World Changes
+
+- **Factions:** [Any shifts in power, favor, or hostility]
+- **Locations:** [Changes to key locations]
+- **Relationships:** [NPC attitudes that shifted]
+- **Time:** [Days/weeks elapsed]
+
+---
+
+## Plot Threads
+
+**Active:** [Ongoing threads the PC is pursuing]  
+**New:** [Hooks opened this session]  
+**Resolved:** [Threads that closed]  
+
+---
+
+## Next Session
+
+**Starts:** [Where/when will next session open?]  
+**Threads to Address:** [What the PC will likely follow up on]  
+
+---
+
+## GM Notes
+
+[Pacing, what worked, what to adjust, foreshadowing planted, etc.]

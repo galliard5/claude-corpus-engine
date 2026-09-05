@@ -1,0 +1,87 @@
+# docker-compose.yml — MCP server stack
+#
+# Starts three MCP servers, all exposing Streamable HTTP transport
+# so Claude Desktop connects via URL rather than spawning subprocesses.
+#
+# Host paths are set in .env (gitignored) — edit that file for your machine.
+# Container paths (/corpus, /memory) are fixed and referenced by the servers.
+#
+# Usage:
+#   docker compose up -d          # start all servers in background
+#   docker compose down           # stop all servers
+#   docker compose logs -f        # tail logs from all servers
+#   docker compose build          # rebuild Python image after code changes
+#
+# Run all compose commands from this directory (Python/), where this file and
+# .env now live. Project name is pinned below so it doesn't depend on the dir.
+
+name: corpus-mcp
+
+services:
+
+  # -------------------------------------------------------------------------
+  # corpus-search — FTS5 full-text search over the worldbuilding corpus
+  # Read-only mount: this server never writes to the corpus.
+  # -------------------------------------------------------------------------
+  corpus-search:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8001:8001"
+    volumes:
+      - ${CORPUS_HOST_PATH}:/corpus:ro
+    environment:
+      CORPUS_ROOT: /corpus
+      MCP_PORT: "8001"
+    command: python search_mcp_server.py
+    restart: unless-stopped
+
+  # -------------------------------------------------------------------------
+  # index-tools — rebuilds directory indexes and search_index.db
+  # Read-write mount: this server writes the generated index files.
+  # -------------------------------------------------------------------------
+  index-tools:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8002:8002"
+    volumes:
+      - ${CORPUS_HOST_PATH}:/corpus
+    environment:
+      CORPUS_ROOT: /corpus
+      MCP_PORT: "8002"
+    command: python index_tools_mcp_server.py
+    restart: unless-stopped
+
+  # -------------------------------------------------------------------------
+  # series-search — FTS5 search over serialised-fiction chapter databases.
+  # Read-only mount. The 'db' parameter in each tool call selects which .db
+  # file to query; omitting it falls back to the server's _DEFAULT_DB.
+  # -------------------------------------------------------------------------
+  series-search:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8003:8003"
+    volumes:
+      - ${CORPUS_HOST_PATH}:/corpus:ro
+    environment:
+      CORPUS_ROOT: /corpus
+      MCP_PORT: "8003"
+      # Corpus-relative default database, from .env. Empty is valid — tools then
+      # require an explicit db argument rather than falling back.
+      SERIES_DEFAULT_DB: ${SERIES_DEFAULT_DB:-}
+    command: python series_search_mcp_server.py
+    restart: unless-stopped
+
+# Removed 2026-09-04: the `memory` service (supergateway wrapping
+# @modelcontextprotocol/server-memory on port 8004). The MCP memory graph was
+# retired 2026-05-19 in favour of claude.ai userMemories, but the service kept
+# running: never registered in claude_desktop_config.json, never wrote a
+# memory.jsonl, referenced by no doc. It also ran `npx -y` with no version pin,
+# so every container start fetched the package fresh from npm — the drift
+# problem filesystem-mcp/Dockerfile exists to prevent. Restore from git history
+# if the graph is ever wanted back; the upstream package is still maintained.

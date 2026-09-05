@@ -12,7 +12,26 @@ Finer-grained history lives closer to the code: the scripts in `Python/` and
 recording why a given line looks the way it does. Consult those when chasing a specific
 behaviour; consult this file when asking what moved since you last pulled.
 
-Dates rather than version numbers, until there is a release process worth versioning against.
+**Dates rather than version numbers.** This project evolves opportunistically rather than toward a
+planned end state, so a semantic version would either overstate how stable its surface is meant to
+be, or turn every change into an argument about which digit to increment. A date just says when.
+
+**Breaking changes are marked, because a date cannot carry that signal.** Warning that an upgrade
+will break a working setup is the one job a version number does that a date does not, so the entry
+has to do it instead. Where a change requires the reader to act — edit `.env`, rebuild an image,
+change a config value, re-register a server — the entry opens with a bold line saying so and
+saying exactly what to do:
+
+> **Breaking — action required:** the default series database moved from a constant in
+> `series_search_mcp_server.py` to the `SERIES_DEFAULT_DB` environment variable. Set it in
+> `Python/.env` and recreate the container with `docker compose up -d series-search`. Without it
+> every `series-search` call must name its own `db`, and calls that omit one now return an error
+> rather than falling back.
+
+Two rules keep that marker worth reading. Put breaking entries **first** within their date section,
+above the ordinary ones. And use it only when the reader genuinely has to do something — an upgrade
+that needs nothing from them needs no marker, which will be most of them. The marker is only useful
+while it stays rare.
 
 ---
 

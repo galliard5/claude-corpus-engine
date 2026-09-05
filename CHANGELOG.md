@@ -35,6 +35,43 @@ while it stays rare.
 
 ---
 
+## 2026-09-05
+
+**Action required:** rebuild the `corpus-search` image and reconnect your MCP client —
+`docker compose up -d --build corpus-search` from `Python/`, then restart Claude Desktop. The
+server code is baked into the image, so `docker compose restart` on its own leaves the old build
+running; and an MCP client reads the tool list once, at connection time, so a client already
+connected will not see `get_section` until it reconnects. Skip either step and you have
+documentation describing a tool your server does not serve. Nothing else breaks: existing
+`search_corpus` calls keep working throughout.
+
+### Added
+
+- **`corpus-search:get_section(path, heading, level)`** — returns a single `##` section of an
+  indexed document instead of the whole file. A search hit on a large reference document used to
+  force a whole-file read to reach one heading; on a representative query the search-plus-read
+  round trip fell from ~9,400 tokens to ~2,200. The section text is a **verbatim slice** — this
+  trims by selection, never by summarising, so prose is never rewritten or paraphrased. Omit
+  `heading` to list a document's sections and their sizes first. Heading matching normalises case,
+  whitespace and dash style and accepts a unique prefix or substring, so a half-remembered
+  heading still resolves; an ambiguous one returns the candidates rather than guessing.
+
+### Changed
+
+- **`search_corpus` results now carry a `Sections:` line** on hits over ~3k tokens, listing each
+  section and its rough token cost so you can pick one to pass to `get_section`. This changes the
+  output of every existing `search_corpus` call — pass `show_sections=false` for the previous
+  format. Smaller documents deliberately don't get the line: the manifest costs about 75 tokens
+  per hit, which only pays for itself when the whole-file read it replaces would have been
+  genuinely expensive.
+
+Both are derived at read time from the index as it already exists — no schema change, no rebuild
+of `search_index.db`, and no change to ranking or scores. `get_section` opens no files: its `path`
+is matched for equality against the indexed path and the body comes from the stored content
+column, so the server still reaches nothing outside the index.
+
+---
+
 ## 2026-09-04 — Initial release
 
 First public release of the engine as a standalone repository.

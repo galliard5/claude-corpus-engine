@@ -2,10 +2,10 @@
 name: File System Reference
 keywords: [reference, schemas, templates, procedures, protocols]
 description: Supplementary procedures, tool schemas, and standards — load on demand from file_system_instructions.md
-schemas_verified_utc: 2026-09-05T02:00:00Z
+schemas_verified_utc: 2026-09-05T19:51:00Z
 ---
 
-> **Last edited (UTC):** 2026-09-05T02:57:00Z
+> **Last edited (UTC):** 2026-09-05T19:51:00Z
 > Held in the body rather than the frontmatter so it survives a copy-paste into a
 > project-instructions field, where frontmatter is discarded. Bump on every edit.
 
@@ -43,7 +43,7 @@ TOOL SCHEMA REFERENCE
 
 > **Greppable convention — do not break.** Each tool is a `` ### `server:tool_name` `` header followed by a fenced block whose first line is `params:`; each parameter is one line, `name: type (required)` for required or `name?: type` for optional. Prose stays outside the fenced block. The schema-drift linter (`Python/check_schema_drift.py`) parses tool names + params from these blocks and ignores all prose — keep the form exact when adding or editing tools, or the linter silently under-reports. Run it after any tool-surface change; it is what verified the snapshot date above.
 
-Complete schemas for all 14 filesystem + 2 corpus-search + 1 index-tools + 3 series-search tools = 20 total, captured by direct introspection via `tool_search`.
+Complete schemas for all 14 filesystem + 3 corpus-search + 1 index-tools + 3 series-search tools = 21 total, captured by direct introspection via `tool_search`.
 
 ## Filesystem Read Tools (4)
 
@@ -208,7 +208,7 @@ params:
 ### `filesystem:list_allowed_directories`
 Returns the list of directories this server can access. No params.
 
-## Corpus Search Tools (2)
+## Corpus Search Tools (3)
 
 Custom MCP server exposing FTS5 ranked search over the corpus. See the CORPUS SEARCH section in `file_system_instructions.md` for the high-level when-to-use guidance. Schemas:
 
@@ -222,6 +222,7 @@ params:
   category_filter?: string|null    — optional path-segment filter
   type_filter?: string|null        — exact match on frontmatter type:
   missing_filter?: string|null     — name|keywords|description|type (corpus hygiene)
+  show_sections?: boolean          — default true; adds the Sections: line (below)
 ```
 **Modes:**
 - `"fts"` *(default)* — full-text BM25; exact terms, FTS5 syntax below. Unchanged legacy behaviour.
@@ -249,6 +250,24 @@ Vector/hybrid need an embeddings-built index; otherwise the call falls back to `
 - Apostrophes are tokenizer separators: `Keller's` indexes as `["keller", "s"]`. Search `Keller` to match.
 - Special characters can produce FTS5 syntax errors — wrap problem terms in double quotes or use prefix matching.
 - Files without YAML frontmatter still get indexed (filename is used as name) but lose the high-weight metadata fields.
+
+**`Sections:` line (`show_sections`, default true):** hits on documents over ~3k tokens gain a line listing their `##` sections and each section's rough token cost — e.g. `Sections: Atmosphere (~87) | Staffing Roster (~521) | Active NPCs (~1195)`. Feed one of those headings to `get_section` to read that part alone. Smaller files don't get the line: reading them whole is cheaper than the manifest plus a second call, and for character sheets it's also the better read. Roughly one indexed file in six qualifies.
+
+### `corpus-search:get_section`
+Returns a single `##` section of an indexed document instead of the whole file. Trims by **selection, not summarisation** — the section text is a verbatim slice, so prose is never rewritten. Pairs with the `Sections:` line above: search says what a document contains and what each part costs, this pulls the one that answers the question.
+```
+params:
+  path: string (required)          — corpus-relative path, copied from a search result
+  heading?: string|null            — section title; omit to list sections without bodies
+  level?: integer                  — heading depth to split on, 1-6 (default 2 = ##)
+```
+**Heading matching is forgiving.** Case, whitespace, and dash style are normalized, and a unique prefix or substring is enough — `"supply cadence"` resolves `"The Estate's Week — Supply Cadence"`. An ambiguous request returns the candidates rather than guessing; an unmatched one returns the full section list.
+
+**Content comes from the index, not from disk** — `path` is matched for equality against `corpus_fts.path`, so only indexed documents are addressable, and results reflect the last index build (check `index_status`). Sections are derived on the fly; nothing about them is stored.
+
+**Use case:** a search hit on a 30k-char reference document. Instead of reading all ~7,900 tokens to reach one section, call `get_section(path, "NPC Discovery Protocol")` for ~480. Measured end-to-end on a representative query: ~9,400 tokens → ~2,200.
+
+**Degrades explicitly, never silently:** a file with no headings at `level`, or one the indexer stores path-only (`[context_limits] = 0`), returns a message saying so rather than an empty or partial section.
 
 ### `corpus-search:index_status`
 Returns the database path, total indexed file count, vector-lane availability, and last-built timestamp. No params.

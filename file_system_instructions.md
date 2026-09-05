@@ -4,7 +4,7 @@ keywords: [rules, instructions, reference]
 description: Core project rules and procedures for every session
 ---
 
-> **Last edited (UTC):** 2026-09-05T02:57:00Z
+> **Last edited (UTC):** 2026-09-05T19:51:00Z
 > Held in the body rather than the frontmatter so it survives the copy-paste into the
 > claude.ai project-instructions field, where frontmatter is discarded. Bump on every edit.
 
@@ -38,7 +38,7 @@ being broken rather than a server being absent.
 
 ## Ships with this repository
 
-**Corpus Search Tools (2):** corpus-search:search_corpus, corpus-search:index_status (see CORPUS SEARCH below)
+**Corpus Search Tools (3):** corpus-search:search_corpus, corpus-search:get_section, corpus-search:index_status (see CORPUS SEARCH below)
 
 **Index Tools (1):** index-tools:rebuild_indexes (see INDEX REBUILD below)
 
@@ -131,7 +131,7 @@ STARTUP PROCEDURES — EXECUTE ON EVERY CONVERSATION START
 
 **[FIRST] Preload all MCP tools (prevents deferred-tool load errors on first calls):**
 Call `tool_search("filesystem read write edit corpus index series search sympy math dice roll")` immediately at session start.
-This loads all 14 filesystem tools, 2 corpus-search tools, 1 index-tools tool, 3 series-search tools, the sympy math tools, and the 4 dice-roller tools into the registry so they're ready for immediate use. Zero cost after first call; eliminates the red parameter-error on initial tool invocations.
+This loads all 14 filesystem tools, 3 corpus-search tools, 1 index-tools tool, 3 series-search tools, the sympy math tools, and the 4 dice-roller tools into the registry so they're ready for immediate use. Zero cost after first call; eliminates the red parameter-error on initial tool invocations.
 
 **Root:** `/corpus` (Docker container path) — ALL MCP file operations confined here. No exceptions.
 **Host path:** `D:\claude\filesystem\` — use this for git, CMD, and native Windows tools.
@@ -257,10 +257,24 @@ Total runtime: ~0.5 seconds. The bat file `Python/refresh_indexes.bat` is the ma
 
 ## STEP 5: CORPUS SEARCH
 
-A custom MCP server (`Python/search_mcp_server.py`) exposes ranked search over the corpus: full-text (SQLite FTS5) plus an optional **semantic vector lane** (sqlite-vec embeddings), selectable/fusible via the `mode` parameter. Two tools:
+A custom MCP server (`Python/search_mcp_server.py`) exposes ranked search over the corpus: full-text (SQLite FTS5) plus an optional **semantic vector lane** (sqlite-vec embeddings), selectable/fusible via the `mode` parameter. Three tools:
 
-- **`corpus-search:search_corpus(query, limit=10, mode="fts", category_filter=None, type_filter=None, missing_filter=None)`** — ranked search across name, keywords, description, category, and content. Returns ranked paths with snippets showing matched context. Higher scores = better matches. `mode` picks the retrieval lane (see below); the three filters compose with AND. `limit` (default 10) is capped at 200 — a larger value returns a diagnostic error, not results (a runaway-call backstop you'll never hit in normal use). (Full filter docs: `System_Documentation/Search_Server.md`.)
+- **`corpus-search:search_corpus(query, limit=10, mode="fts", category_filter=None, type_filter=None, missing_filter=None, show_sections=True)`** — ranked search across name, keywords, description, category, and content. Returns ranked paths with snippets showing matched context. Higher scores = better matches. `mode` picks the retrieval lane (see below); the three filters compose with AND. `limit` (default 10) is capped at 200 — a larger value returns a diagnostic error, not results (a runaway-call backstop you'll never hit in normal use). `show_sections` adds the `Sections:` line described below. (Full filter docs: `System_Documentation/Search_Server.md`.)
+- **`corpus-search:get_section(path, heading=None, level=2)`** — returns one `##` section of an indexed document instead of the whole file. Omit `heading` to list a document's sections and their sizes first. Heading matching is forgiving: case, spacing, and dash style are normalized, and a unique prefix or substring is enough.
 - **`corpus-search:index_status()`** — Returns file count, vector-lane availability, and last-built timestamp. Use to check freshness before relying on results.
+
+**Reading one section instead of a whole file.** Hits on documents over ~3k tokens carry a `Sections:` line listing each `##` section and its rough token cost:
+
+```
+7. [rrf: 0.03] World_Building/Locations/Old_Mill_Daily_Life.md
+   Match: ...the **warden** posts a standing **watch** through the harvest weeks...
+   Sections: Two-Stage Workflow (~214) | Seasonal Cadence (~1831) | Visitor Categories (~391)
+             | NPC Discovery Protocol (~428) | Hook Seed Table (~1034) | ...
+```
+
+When one section clearly answers the question, call `get_section` with that heading rather than reading the file. On a representative query this took the round trip from ~9,400 tokens to ~2,200. The section text is a **verbatim slice** — this trims by selection, never by summarising, so nothing is paraphrased or lost within what it returns.
+
+Read the whole file anyway when you need the document's shape rather than one fact — establishing voice, checking tone, or any task where the surrounding material is the point. Smaller files carry no `Sections:` line precisely because reading them whole is the right call.
 
 **FTS5 query syntax:**
 - `warden` — single term (porter stem matches warden, wardens, etc.)
@@ -511,7 +525,8 @@ Process: Read → identify exact target text → edit with verified string.
 - `filesystem:directory_tree` — `path`, `excludePatterns?`
 - `filesystem:search_files` — `path`, `pattern`, `excludePatterns?`
 - `filesystem:list_allowed_directories` — no params
-- `corpus-search:search_corpus` — `query`, `limit?`, `mode?`, `category_filter?`, `type_filter?`, `missing_filter?`
+- `corpus-search:search_corpus` — `query`, `limit?`, `mode?`, `category_filter?`, `type_filter?`, `missing_filter?`, `show_sections?`
+- `corpus-search:get_section` — `path`, `heading?`, `level?`
 - `corpus-search:index_status` — no params
 - `index-tools:rebuild_indexes` — `load?`
 - `series-search:search_chapters` — `query`, `series?`, `db?`, `limit?`

@@ -79,6 +79,7 @@ search_corpus(
     category_filter: str | None = None,
     type_filter: str | None = None,
     missing_filter: str | None = None,
+    show_sections: bool = True,
 ) -> str
 ```
 
@@ -161,6 +162,30 @@ search_corpus("*", missing_filter="type", category_filter="[Region]")
 
 For "all files where X is missing" without a content query, you still need a query string — pass any broad term or wildcard.
 
+## The `get_section` tool
+
+```python
+get_section(path, heading=None, level=2) -> str
+```
+
+Returns a single section of an indexed document instead of the whole file. It exists because a search hit on a large reference document used to force a whole-file read to reach one heading: the daily-life toolkit measured during development is ~7,900 tokens, and a typical question wants one ~400-token section of it. Measured end-to-end on a representative query, the search-plus-read round trip went from ~9,400 tokens to ~2,200.
+
+**This trims by selection, not summarisation.** Section bodies are verbatim slices of the stored content — verified across every file of the 581-document corpus this was developed against, by reassembling the split and checking it against the source. Nothing is paraphrased, compressed, or rewritten. That distinction is the whole point: lossy compression of lore prose costs voice, which is the thing the corpus exists to preserve.
+
+**How sections are derived.** ATX headings (`## Title`) at the requested `level`, with deeper headings kept inside their parent, and fenced code blocks skipped so a `##` in an example doesn't split a document. Text before the first heading becomes a leading section titled by the document's H1, falling back to the frontmatter `name`, since a large share of files carry no H1 at all (220 of 581 in the development corpus). Nothing is stored: sections are computed on each call from the `content` column.
+
+**Heading matching** runs in tiers, first unambiguous one winning: exact (normalized) → prefix → substring. Normalization casefolds, collapses whitespace, and folds em/en dashes and curly quotes to ASCII, so `"estate's week - supply"` resolves `"The Estate's Week — Supply Cadence"`. Ambiguity returns the candidate list rather than a guess; no match returns the full section list. Omitting `heading` lists sections and their sizes without returning any body.
+
+**The `Sections:` line.** `search_corpus(show_sections=True)` — the default — adds a manifest of section titles and rough token costs to hits large enough to justify it. Gates live in `search_mcp_server.py`:
+
+| Constant | Value | Why |
+|---|---|---|
+| `_MANIFEST_MIN_CHARS` | 12,000 (~3k tokens) | A manifest costs ~75 tokens per hit; at 10 hits that's ~750 tokens per search. Below ~3k tokens a whole-file read is cheaper than the manifest plus a follow-up call — and for the character sheets that dominate the 5–12k band it's also the *better* read, since you want the whole character, not one heading of them. Roughly one file in six clears the gate (98 of 581 in the development corpus). |
+| `_MANIFEST_MIN_SECTIONS` | 2 | One section is the whole document. |
+| `_MANIFEST_MAX_SECTIONS` | 14 | Caps a pathological outline document; overflow keeps the largest sections and notes the count dropped. |
+
+**When not to use it.** Whole-file reads remain correct when the document's shape is the point — establishing voice, checking tone, or any task where surrounding material matters. Section retrieval answers questions; it does not replace reading.
+
 ## The `index_status` tool
 
 ```python
@@ -187,12 +212,26 @@ Each result includes:
 - **Apostrophes are tokenizer separators.** "Keller's" indexes as `["keller", "s"]`. Searching `Keller` finds it; quoted `"Keller's"` may not.
 - **`type_filter` is exact match.** `type_filter="setting"` will NOT match files with `type: setting-document`. Use the full value.
 - **`limit` is capped at 200.** A value above the ceiling (or below 1) returns a diagnostic error instead of results — see *Security posture*. The default of 10 is unaffected; this only bites a deliberately huge request.
+- **Indexing is per-file, not per-section.** `get_section` splits at read time, so retrieval is still ranked at document granularity — see *Deferred: section-granular indexing* below.
+
+## Deferred: section-granular indexing
+
+**Status: not started. Revisit once `get_section` and the `Sections:` manifest have real usage behind them** (added 2026-09-05).
+
+`corpus_fts` holds one row per file, and `corpus_vec` one embedding per file. Section-granular indexing would make each `##` section its own row. Two things would improve:
+
+- **BM25 ranking.** A 30k-char toolkit and a 2k-char character sheet are currently scored on the same footing; BM25's length normalization handles that only crudely. Shorter units would let a section that is genuinely *about* the query outrank a long document that merely mentions it.
+- **The vector lane, more so.** A single 384-dim embedding averaged over a whole document loses whatever made any one part of it distinctive — an 8k-token GM toolkit collapses to a vague centroid of its overall subject, and the section that would actually answer the query has no separate representation to be found by. Per-section embeddings are the standard fix and would likely matter more than the ranking gain.
+
+**Costs, which are why it's deferred:** a `corpus_fts` schema change, a full reindex, a rewrite of the insert path in `build_indexes.py`, an `embed_cache` keying change (hashes are per-file today), a `check_schema_drift.py` update, and shifted ranking across the whole corpus — meaning every saved query and habit built on current result ordering shifts underneath it. The embedding cost also multiplies by roughly the mean section count.
+
+**Decide on evidence, not enthusiasm.** The question to answer first is how often callers actually reach for a section versus the whole file once the manifest is in front of them. If `get_section` sees little use, per-file indexing is fine and this is wasted churn. If it becomes the default access pattern, the ranking layer should match it. `search_mcp_server.py` carries a TODO pointing here.
 
 ## Security posture
 
 - DB opened **read-only** via SQLite URI (`?mode=ro`). The server cannot write to the database.
 - All user input passed via SQLite parameter binding (`?` placeholders). No string concatenation, no SQL injection surface.
-- No path arguments exposed. The DB path is hardcoded. The only thing reachable through this server is ranked search over the pre-built tables.
+- **No filesystem access.** The DB path is hardcoded and the server opens no files. `get_section` takes a `path`, but it is an index key, not a filesystem path: it is matched for equality against `corpus_fts.path` and the body is served from the stored `content` column. A path not in the index returns "not in the index" (with near-miss suggestions on the basename), so traversal sequences, absolute paths, and anything outside the corpus are unreachable by construction rather than by filtering. `level` is whitelisted to 1–6.
 - `missing_filter` is whitelisted server-side against `{"name", "keywords", "description", "type"}`. Any other value is rejected before touching SQL.
 - `mode` is whitelisted against `{"fts", "vector", "hybrid"}`. The sqlite-vec extension is loaded only when a vector/hybrid query needs it, with `enable_load_extension` toggled back off immediately after the load. Embedding runs in-process (local model, no network at query time); the vector lane adds no new external surface.
 - **Runaway guards.** `limit` is capped at `_MAX_LIMIT` (200) — a higher or non-positive value returns a diagnostic error rather than running. Every query runs under a `_QUERY_TIMEOUT_S` (15s) wall-clock guard (a SQLite progress handler that aborts the statement); an overrun returns a timeout error. Both are generous backstops against a pathological call (`limit=100000`, a CPU-pinning query), not normal-use limits, and the error messages name the constant + file so the caps are easy to find and tune in `search_mcp_server.py`.

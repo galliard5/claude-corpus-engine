@@ -2,10 +2,10 @@
 name: File System Reference
 keywords: [reference, schemas, templates, procedures, protocols]
 description: Supplementary procedures, tool schemas, and standards — load on demand from file_system_instructions.md
-schemas_verified_utc: 2026-07-03T22:30:00Z
+schemas_verified_utc: 2026-09-05T02:00:00Z
 ---
 
-> **Last edited (UTC):** 2026-09-05T01:49:00Z
+> **Last edited (UTC):** 2026-09-05T02:44:00Z
 > Held in the body rather than the frontmatter so it survives a copy-paste into a
 > project-instructions field, where frontmatter is discarded. Bump on every edit.
 
@@ -39,9 +39,9 @@ This file supplements `file_system_instructions.md`. Load when needed for:
 TOOL SCHEMA REFERENCE
 =====================
 
-> **Dated snapshot, not live truth.** Cached from live introspection on 2026-07-03 against `mcp/filesystem:2026.1.14`. Live docstrings via `tool_search` are authoritative — on any parameter error or doubt, trust the live schema over this document, then update this section.
+> **Dated snapshot, not live truth.** Cached from live introspection, last re-verified 2026-09-05 against `mcp/filesystem:2026.8.31`. Live docstrings via `tool_search` are authoritative — on any parameter error or doubt, trust the live schema over this document, then update this section.
 
-> **Greppable convention — do not break.** Each tool is a `` ### `server:tool_name` `` header followed by a fenced block whose first line is `params:`; each parameter is one line, `name: type (required)` for required or `name?: type` for optional. Prose stays outside the fenced block. The schema-drift linter (`check_schema_drift.py`, planned) parses tool names + params from these blocks and ignores all prose — keep the form exact when adding or editing tools, or the linter silently under-reports.
+> **Greppable convention — do not break.** Each tool is a `` ### `server:tool_name` `` header followed by a fenced block whose first line is `params:`; each parameter is one line, `name: type (required)` for required or `name?: type` for optional. Prose stays outside the fenced block. The schema-drift linter (`Python/check_schema_drift.py`) parses tool names + params from these blocks and ignores all prose — keep the form exact when adding or editing tools, or the linter silently under-reports. Run it after any tool-surface change; it is what verified the snapshot date above.
 
 Complete schemas for all 14 filesystem + 2 corpus-search + 1 index-tools + 3 series-search tools = 20 total, captured by direct introspection via `tool_search`.
 
@@ -102,7 +102,9 @@ filesystem:read_text_file(path)   — check frontmatter at top and completion at
 ```
 `write_file` can return success but fail silently — always verify with the read above.
 
-**⚠ Large-payload caveat:** A single `write_file` rewriting a large file (roughly 10–15 KB+) has been observed to hang indefinitely, with subsequent calls hanging behind it. Investigation (2026-07-03) traced this to Claude Desktop's tool-approval layer stalling on large buffered inputs — the call never reaches the MCP server, so the Docker/server side is fine and doesn't need restarting. If a call hangs silently, check for an unanswered approval prompt first; a Desktop app restart clears it if none is visible. Prefer several smaller `edit_file` calls over one big `write_file` for large rewrites — full writeup in `System_Documentation/Docker_Filesystem.md` > Troubleshooting.
+**⚠ Hang caveat:** A `filesystem` call can hang indefinitely, with subsequent calls — even trivial ones — hanging behind it. Investigation (2026-07-03) traced this to Claude Desktop's tool-approval layer, upstream of MCP: the call never reaches the server, so the Docker side is fine and does not need restarting. If a call hangs silently, check for an unanswered approval prompt first; a Desktop restart clears it if none is visible.
+
+Originally attributed to large streamed *inputs* on `write_file` (roughly 10–15 KB+). **That explanation is narrower than the failure:** a 2026-09-04 `read_text_file` with a small input and a large expected *output* hung identically and cleared the same way. Treat large payloads in either direction as a correlation worth avoiding, not a diagnosis — and don't rule the failure out because a call's input is small. Prefer several smaller `edit_file` calls over one large `write_file`, and narrow a large read's range; neither is a guaranteed dodge. Full writeup, including a warning that Desktop's log-based evidence trail is currently unavailable, in `System_Documentation/Docker_Filesystem.md` > Troubleshooting.
 
 ### `filesystem:edit_file`
 Line-based edits via exact string match. Returns git-style diff.
@@ -343,7 +345,7 @@ One build script produces three derived files. All three are gitignored.
 | `index/directory_index_with_files.md` | `Python/build_indexes.py` | Directory tree with full file list (load on demand) |
 | `index/search_index.db` | `Python/build_indexes.py` | SQLite FTS5 index for `corpus-search` MCP server |
 
-`build_indexes.py` produces all three outputs from a single `os.walk` pass, replacing `build_directory_indexes.py` and `build_search_index.py` (unified 2026-05). The old scripts are in `Trash/` if needed for reference.
+`build_indexes.py` produces all three outputs from a single `os.walk` pass, replacing `build_directory_indexes.py` and `build_search_index.py` (unified 2026-05). Those superseded scripts are gone — recoverable from git history if ever needed.
 
 ## Vector lane
 
@@ -441,13 +443,13 @@ PYTHON SCRIPTS PROTOCOL
 > **Authoritative source:** `Python_Scripts_Protocol.md` (terse rules) and `System_Documentation/Python_Scripts.md` (full conventions with reasoning). This section is a summary — load those documents when writing or debugging scripts.
 
 - Last verified Python version: 3.14.3
-- Since the 2026-06-12 repo split, scripts live in two places: the index builder + MCP servers stay in `D:\claude\filesystem\Python\` (`corpus-infra` repo, still visible under `/corpus`); the maintenance/conversion scripts (naming, session summaries, series/PDF pipelines, map converter, bgm) moved **out of the corpus** to their own repos under `D:\Claude\projects\`. You can't see the projects ones via `/corpus` — running/editing those is a Claude Code (dev-side) concern; ask the user to run them.
+- Scripts live in two places, and **only the first ships with this repository**: the index builder and MCP servers are in `Python/` (visible to you under `/corpus/Python/`); corpus maintenance and conversion scripts (naming validation, session summaries, content pipelines) live outside the corpus entirely and are **not part of this repo**. You can't see those via `/corpus` — running or editing them is a Claude Code (dev-side) concern; ask the user. On the authoring machine they sit under `D:\Claude\projects\`.
 - To run a `corpus-infra` script from CMD: `cd D:\claude\filesystem\Python && python script_name.py [options]`
 - if writing a cmd line call or a /bat file to run a cript, use 'python' instead of 'python3'
 
 ## Two script categories with different conventions
 
-**Modification scripts** — write to or rename corpus files (now in `projects\corpus-tools\`). Examples: `validate_naming.py`, `process_session_summary.py`, `run_in_sandbox.py`.
+**Modification scripts** — write to or rename corpus files. These live in the not-shipped maintenance directory; the conventions below apply to any you write yourself.
 
 - Must support `--dry-run` flag for preview
 - Must require user confirmation before modifying files
@@ -461,10 +463,12 @@ PYTHON SCRIPTS PROTOCOL
 
 ## Naming validation
 
+A representative modification script, from the not-shipped maintenance directory:
+
 ```cmd
-python D:\Claude\projects\corpus-tools\validate_naming.py --root "D:\Claude\filesystem\World_Building"
+python <maintenance-scripts>\validate_naming.py --root "D:\Claude\filesystem\World_Building"
 ```
-Scans for naming violations (spaces, ampersands, apostrophes), previews fixes, requires approval. Modification script — supports `--dry-run`. Resolves the corpus via the `CORPUS_ROOT` env var (fallback `D:\Claude\filesystem`).
+Scans for naming violations (spaces, ampersands, apostrophes), previews fixes, requires approval. Modification script — supports `--dry-run`. Resolves the corpus via the `CORPUS_ROOT` env var (fallback `D:\Claude\filesystem`). Shown as a worked example of the conventions above, not as something this repository provides.
 
 ---
 

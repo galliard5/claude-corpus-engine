@@ -4,7 +4,7 @@ keywords: [rules, instructions, reference]
 description: Core project rules and procedures for every session
 ---
 
-> **Last edited (UTC):** 2026-09-05T01:49:00Z
+> **Last edited (UTC):** 2026-09-05T02:44:00Z
 > Held in the body rather than the frontmatter so it survives the copy-paste into the
 > claude.ai project-instructions field, where frontmatter is discarded. Bump on every edit.
 
@@ -162,8 +162,8 @@ This catches the common failure mode where the on-disk file is edited but the pr
 
 **Engine directories:**
 - `Core_Rules/` — GM rules (`core_rules.md`), extraction rules, templates (never edit originals)
-- `Python/` — **Separate git repo** (`corpus-infra`): the Docker MCP servers (corpus-search, index-tools, series-search) + the index builder + `docker-compose.yml`. Not part of the worldbuilding repo — you don't commit here. (See CORPUS SEARCH below.)
-- `System_Documentation/` — **Separate git repo** (`system-docs`): reference docs for the indexer, corpus search, Docker, and audit history. Start at `README.md`. Not part of the worldbuilding repo.
+- `Python/` — The Docker MCP servers (corpus-search, index-tools, series-search), the index builder, and `docker-compose.yml`. Part of this repository, but dev-side territory: code-claude's domain, not yours to edit or commit. (See CORPUS SEARCH below.)
+- `System_Documentation/` — Reference docs for the indexer, corpus search, Docker, and audit history. Start at `README.md`. Also dev-side.
 - `Trash/` — Soft-delete destination (no permanent deletes)
 - `Working_Documents/` — **Handoffs, proposals, and planning documents go here, not at the corpus root.** Contents are excluded from the public engine repository by a directory rule, so anything written here is unpublished by default. Retire a document to `Trash/` once its work closes, and promote anything durable it produced into `System_Documentation/` first. See its `README.md`.
 - `.github/` — GitHub Codespaces auto-generated; leave alone
@@ -177,9 +177,12 @@ This catches the common failure mode where the on-disk file is edited but the pr
 - `Python_Scripts_Protocol.md` — Terse rules for Python scripts; see `System_Documentation/Python_Scripts.md` for the full conventions with reasoning
 - `README.md` — Repository overview
 - `.gitignore` — Excludes derived artifacts, ingest folders, and personal content from version control
-- **Handoff files** — working handoff/plan docs (e.g. a `*_Handoff.md`) live at root during active multi-session work and are deleted (or moved to `Trash/`) once complete — don't treat a root-level handoff file as permanent structure
 
-Project-side root files (`AGENTS.md`, `Claude_Code_Context.md`, `Creative_Writing_Skills_Override.md`) are listed in the profile.
+Handoffs and planning documents are **not** root files — they live in `Working_Documents/`, above.
+
+Some root files are project-side rather than engine-side and are not part of this repository
+(`AGENTS.md`, `Claude_Code_Context.md`, `Creative_Writing_Skills_Override.md`). They are listed in
+the profile; if you are working from a fresh clone, they will not be present.
 
 **Index files (now under `/index/`):**
 - `index/directory_index.md` — Live directory map (gitignored, see DIRECTORY INDEX below)
@@ -416,7 +419,31 @@ CORE WORKFLOWS
 
 ## GIT COMMIT & PUSH TO GITHUB
 
-**Repo structure (since 2026-06-12):** The corpus is split into per-project git repos. The one you commit is the **worldbuilding repo** rooted at `D:\claude\filesystem\` (lore, `Core_Rules/`, this file) → backs up to its configured private remote (run `git remote -v` if you need the URL; it is deliberately not written here). `Python/` (`corpus-infra`) and `System_Documentation/` (`system-docs`) are **separate repos** nested inside and gitignored here, so your `git add .` never touches them — that's correct, they're managed on the dev side. The development projects (bgm, map converter, etc.) moved out of the corpus entirely to `D:\Claude\projects\` and aren't visible to you. **Net: your commit workflow is unchanged — just keep committing from `filesystem\`.**
+**Repo structure (since the 2026-09-04 split): two repositories, one working tree.**
+
+| Repo | Rooted at | You commit here for | How often |
+|---|---|---|---|
+| **content** | `D:\claude\filesystem\World_Building\` | Everything under `World_Building/` — settings, campaigns, characters, scenarios, `Project_Profile.md` | Most sessions |
+| **engine** | `D:\claude\filesystem\` | `Core_Rules/`, this file, `file_system_reference.md` | Occasionally |
+
+**The directory you `cd` into decides which repo you commit to.** `World_Building/` is a repository
+nested inside the engine checkout, so a `git add` run from `D:\claude\filesystem` **cannot reach
+inside it** — git treats it as an opaque boundary. Committing lore therefore means `cd`-ing into
+`World_Building` first. Getting this wrong doesn't produce an error; it produces a commit that
+silently omits your work.
+
+The engine repository is public-capable, so treat commits there as published: no setting names, no
+personal paths. `Python/` and `System_Documentation/` live in it but are dev-side — code-claude's
+domain, not yours.
+
+`Working_Documents/` is the exception to both. Its **contents are gitignored**, so a handoff you
+write there is not version-controlled anywhere — deliberately, since working documents are
+scaffolding rather than durable record. Promote anything worth keeping into
+`System_Documentation/` before retiring the document. Don't try to commit a handoff and don't be
+surprised when `git status` never mentions one.
+
+Both remotes are private. Run `git remote -v` in the relevant directory if you need a URL; they are
+deliberately not written here.
 
 **Environment:** Windows CMD only. No bash. Provide copy-paste `cmd` blocks.
 
@@ -435,15 +462,18 @@ Session: Riverside Campaign 02 | Recruitment, squad briefing | Date: 8 March 165
 
 **Build the commit from your pending list.** You know exactly which files you wrote this session — the BATCH WRITE PROTOCOL list above *is* the stage list. Enumerate those paths and no others.
 
-**Copy & Paste This Block** (fill in the real paths and the real message — never leave a placeholder, and never reuse the previous commit's message):
+**Copy & Paste This Block** (fill in the real paths and the real message — never leave a placeholder, and never reuse the previous commit's message). Note the `cd`: paths are relative to `World_Building`, because that is the repository root for content work.
 ```cmd
 D:
-cd D:\claude\filesystem
-git add "World_Building/[Setting]/Faction_Overview.md" "World_Building/[Setting]/Characters/Anna_Keller.md"
+cd D:\claude\filesystem\World_Building
+git add "[Setting]/Faction_Overview.md" "[Setting]/Characters/Anna_Keller.md"
 git commit -m "World Building: Faction overview + new NPC | Overview doc and supporting character file | Date: 12 March 1651"
 git push origin main
 git status --short
 ```
+
+For an engine-side commit — a rules change, or an edit to this file — `cd D:\claude\filesystem`
+instead and stage paths relative to that root (`Core_Rules/...`, `file_system_instructions.md`).
 
 The trailing `git status --short` prints whatever is still uncommitted. **Expect leftovers** — they're usually code-claude's work in flight, and they are not yours to commit. If the user pastes back entries you don't recognize, say so rather than offering to sweep them in.
 
@@ -582,7 +612,7 @@ Good for: peripheral NPCs, filler location descriptions, batch background charac
 **Mode B — Mechanical Transformation**
 Source identifies what to change. Haiku executes mechanical edits.
 Good for: format conversions, case-normalizing filenames, batch metadata updates, applying a structural change to many files.
-*Often, a Python script is the right tool here instead. Scripts live in two places: `Python/` (`corpus-infra` — index builder and MCP servers, visible to you) and `D:\Claude\projects\corpus-tools\` (maintenance and conversion scripts, **not** visible to you — ask the user or hand to code-claude). Each script includes header comments describing what it does and how to run it. To write a new script, load `Python_Scripts_Protocol.md` (terse rules) or `System_Documentation/Python_Scripts.md` (full conventions with reasoning).*
+*Often, a Python script is the right tool here instead. Scripts live in two places: `Python/` (the index builder and MCP servers — part of this repository and visible to you) and a separate maintenance-scripts location outside the corpus (**not shipped with this repository and not visible to you** — ask the user or hand to code-claude; the profile names it if this deployment has one). Each script includes header comments describing what it does and how to run it. To write a new script, load `Python_Scripts_Protocol.md` (terse rules) or `System_Documentation/Python_Scripts.md` (full conventions with reasoning).*
 
 ### Source Phase
 

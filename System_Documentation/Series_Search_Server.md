@@ -40,9 +40,9 @@ Indexed columns: `chapter_num`, `title`, `arc`, `character`, `content`. The FTS5
 
 **Tokenizer:** `unicode61` (default). No porter stemming — terms must match literally. Wildcard prefix (`mech*`) and exact-phrase quoting both work.
 
-**FTS5 quirk — hyphens:** FTS5 treats `-` as the NOT operator outside of phrase quotes. `M-318` is parsed as `M NOT 318`. Two reliable workarounds: drop the hyphen (`M318`), or use a quoted phrase with a space (`"M 318"`). The space form is safer when you need adjacency.
+**FTS5 quirk — hyphens:** FTS5 treats `-` as the NOT operator outside of phrase quotes. `X-318` is parsed as `X NOT 318`. Two reliable workarounds: drop the hyphen (`X318`), or use a quoted phrase with a space (`"X 318"`). The space form is safer when you need adjacency.
 
-**FTS5 quirk — dots:** The `unicode61` tokenizer treats `.` as a separator. `Bit.nek` in a query won't tokenize as a single term — use `Bit nek` (space) instead. The dot in the source text is also treated as a separator at index time, so the terms are stored as adjacent tokens and the space query finds them correctly.
+**FTS5 quirk — dots:** The `unicode61` tokenizer treats `.` as a separator. `Vel.nir` in a query won't tokenize as a single term — use `Vel nir` (space) instead. The dot in the source text is also treated as a separator at index time, so the terms are stored as adjacent tokens and the space query finds them correctly.
 
 ## The three tools
 

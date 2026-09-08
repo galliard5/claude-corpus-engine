@@ -235,7 +235,7 @@ The `index-tools` MCP server exposes one tool for refreshing the on-disk indexes
 - `load="with_files"` — return fresh directory_index_with_files.md Claude section
 - `load="search_status"` — return corpus search index_status (file count + timestamp)
 
-Total runtime: ~0.5 seconds. The bat file `Python/refresh_indexes.bat` is the manual equivalent (double-click from Explorer).
+Total runtime: ~0.6 seconds. The bat file `Python/refresh_indexes.bat` is the manual equivalent (double-click from Explorer).
 
 **When to call it:**
 - Predicted path lookups failing repeatedly (directory has drifted)
@@ -310,7 +310,7 @@ Vector/hybrid require the index to have been built with embeddings; if absent th
 
 **Index scope:** Indexes all `.md` files under `/corpus` except `Trash/`, `Python/`, hidden/build dirs, and the project-specific exclusions configured in `Python/indexer.cfg`. The index is a binary SQLite file at `index/search_index.db` — gitignored, rebuilt on demand.
 
-**Refreshing the index:** Use `index-tools:rebuild_indexes` (preferred — runs all three outputs in one pass via `build_indexes.py`). Manual alternative: `refresh_indexes.bat` (double-click from Explorer). Sub-second in normal use — document embeddings are cached by content hash, so a rebuild only re-embeds the files that actually changed. (The exception is a *cold* build — a fresh DB or the first run after an embedding-model change — which re-embeds everything and takes ~40s. Rare; not something you trigger casually.) Call `corpus-search:index_status` if you need to confirm freshness without rebuilding.
+**Refreshing the index:** Use `index-tools:rebuild_indexes` (preferred — runs all three outputs in one pass via `build_indexes.py`). Manual alternative: `refresh_indexes.bat` (double-click from Explorer). Sub-second in normal use — document embeddings are cached by content hash, so a rebuild only re-embeds the files that actually changed. (The exception is a *cold* build — a fresh DB or the first run after an embedding-model change — which re-embeds everything and takes about a minute. Rare; not something you trigger casually.) Call `corpus-search:index_status` if you need to confirm freshness without rebuilding.
 
 ## STEP 6: SERIES SEARCH
 

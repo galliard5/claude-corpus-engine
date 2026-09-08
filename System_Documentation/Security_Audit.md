@@ -107,7 +107,7 @@ Audit findings:
 - **`load` parameter whitelisted** against `{None, "directory", "with_files", "search_status"}`. Any other value rejected before any work begins.
 - **Subprocess invocation is fixed.** Command is `[sys.executable, str(BUILDER), "--no-pause"]` — no shell, no string interpolation, no user input.
 - **`stdin=subprocess.DEVNULL`** belt-and-braces guard against any rogue `input()` call hanging the subprocess.
-- **30-second timeout** on the subprocess. Bounded blast radius if the rebuild ever hangs.
+- **300-second timeout** on the subprocess. Bounded blast radius if the rebuild ever hangs. Raised from 30s because a cold vector build — first run after a model change, or a fresh DB — downloads the ONNX embedding model and CPU-embeds every document, which legitimately exceeds 30s; a premature kill rolls back the rebuild's inserts.
 
 ### `cfg_loader.py`
 

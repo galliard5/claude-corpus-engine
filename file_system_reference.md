@@ -295,7 +295,7 @@ params:
 
 **Hardcoded paths:** The tool can only run the known build scripts and only read the known index files. No parameter accepts a path from the caller. The corpus-search server's database is read-only here as well — the rebuild path goes through the build script, not the server.
 
-**Timeout:** 30 seconds per step. Sub-second runtime in practice (rebuild typically ~0.5s total).
+**Timeout:** 300 seconds on the build subprocess — set high deliberately, because a cold vector build downloads the embedding model and re-embeds every document, which legitimately runs past a short timeout. Sub-second runtime in normal use (warm rebuild typically ~0.6s total).
 
 **Use cases by `load` value:**
 - `"directory"` — predicted path failed; need fresh tree
@@ -368,7 +368,7 @@ One build script produces three derived files. All three are gitignored.
 
 ## Vector lane
 
-`build_indexes.py` accepts a `--no-vectors` flag for FTS-only builds, skipping the embedding pass entirely. When embeddings are included, they're cached by content hash (`embed_cache`) so warm rebuilds only re-embed files that actually changed and stay sub-second; a cold build (fresh DB, or first run after an embedding-model change) re-embeds everything and takes roughly 40s. See `System_Documentation/Indexer.md` for full detail — not duplicated here.
+`build_indexes.py` accepts a `--no-vectors` flag for FTS-only builds, skipping the embedding pass entirely. When embeddings are included, they're cached by content hash (`embed_cache`) so warm rebuilds only re-embed files that actually changed and stay sub-second; a cold build (fresh DB, or first run after an embedding-model change) re-embeds everything and takes roughly a minute. See `System_Documentation/Indexer.md` for full detail — not duplicated here.
 
 ## Three ways to refresh
 

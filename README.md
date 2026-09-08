@@ -80,13 +80,39 @@ A few decisions that aren't obvious from the code:
 
 - **Two SQLite tables, not one.** FTS5's tokenizer splits on hyphens, so `setting-document` is
   unsearchable as a typed value. A companion table holds structured fields for SQL equality.
-- **Rebuilds are wholesale, embeddings are incremental.** A full rebuild is sub-second; the
-  embedding pass is ~99% of a cold build, so vectors are cached by content hash.
+- **Rebuilds are wholesale, embeddings are incremental.** The directory trees and FTS tables are
+  dropped and rebuilt every run — sub-second, so incremental complexity isn't worth it. The
+  embedding pass is the exception: it is ~99% of a *cold* build, so vectors are cached by content
+  hash. In practice a routine refresh is well under a second and a from-scratch build is about a
+  minute. See `System_Documentation/Indexer.md` → *Performance*.
 - **Retrieval is not salience.** Opening a file during prep doesn't make its contents part of the
   scene. `core_rules.md` covers why this distinction matters when a model has search available.
 - **The docs are linted against the servers.** Hand-written schema documentation drifts in one
   direction — the code changes, the prose doesn't. `check_schema_drift.py` introspects the live
   servers and reports mismatches.
+
+## Credits & acknowledgements
+
+**Project author and maintainer:** galliard5. Built as the tooling underneath a private campaign
+corpus and used daily for about a year before it was extracted and released.
+
+**Design reference — [RPG OS](https://github.com/croatianrdy2defend-create/RPG-OS)** by
+croatianrdy2defend-create (documentation CC BY 4.0, code MIT).
+
+RPG OS attacks the adjacent half of the same problem. Where this engine concentrates on *finding*
+the right record in a large corpus, RPG OS concentrates on deciding which retrieved record is
+*authoritative*: an explicit stable-truth → campaign-state → current-save precedence, a hard
+boundary between current state and historical evidence, and a save protocol with preimages,
+recovery markers and lineage. It reaches those properties with no runtime stack at all — ordinary
+Markdown files and a capable model — which is a different design position from this one, and a
+useful corrective to read against.
+
+Its author's comparative review of the two projects identified several real weaknesses here. Fixes
+arising from it are recorded in `CHANGELOG.md`. No text or code is copied from RPG OS; the credit is
+for the design work and the critique.
+
+RPG OS credits this project in turn, as a design reference for its v0.7.2 optional-preparation
+discussion and its v0.9.0 source-access and audit design.
 
 ## Licence
 

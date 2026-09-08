@@ -35,6 +35,52 @@ while it stays rare.
 
 ---
 
+## 2026-09-08
+
+**Action required:** register the new server and restart your MCP client. Add to
+`claude_desktop_config.json` (or your client's equivalent):
+
+> ```json
+> "transcript": {
+>   "command": "python",
+>   "args": ["<corpus>/Python/transcript_mcp_server.py"],
+>   "env": {"CORPUS_ROOT": "<corpus>"}
+> }
+> ```
+>
+> Then `python -m pip install playwright markdownify` on the **host** interpreter, and restart the
+> client — an MCP client reads the tool list once at connection time, so a client already running
+> will not see the tool. Skip the restart and you have documentation describing a tool your client
+> does not serve. Nothing else changes: every existing server and tool behaves as before.
+
+### Added
+
+- **`transcript:capture_session_transcript`** — captures a session transcript from a public
+  claude.ai share link, writing the raw JSONL archive and deriving the readable markdown from it.
+  This puts the capture pipeline added yesterday behind a tool the GM can call at a checkpoint,
+  rather than it being a thing the operator runs by hand between sessions.
+
+  **It runs natively on the host, not in the Docker stack**, and that is not an oversight. Capture
+  drives a real browser: claude.ai challenges headless ones, a container has no display, one image
+  serves all three existing servers so a browser would bloat the two that will never use it, and
+  the containers currently reach nothing but the mounted corpus — capture would need outbound
+  HTTPS. The host already has a browser and the problem does not arise there. `Python/Dockerfile`
+  copies by explicit filename, so nothing new lands in the image.
+
+  Its dependencies (`playwright`, `markdownify`) are deliberately **not** in
+  `Python/requirements.txt`, which is baked into every server image for something no container
+  runs. Playwright drives the browser already installed on the host, so the bundled ~150MB
+  Chromium download is not needed.
+
+  Guards mirror `index-tools`: the two scripts are hardcoded, no parameter accepts a filesystem
+  path, output locations are derived from the corpus root and a whitelisted campaign/session that
+  cannot express a path traversal, and the share URL must match the claude.ai share form. An
+  existing capture is refused rather than overwritten unless `overwrite=true`, because the raw file
+  is the archive copy. A failed capture writes nothing; if capture succeeds but the cleaner fails,
+  the raw archive is intact and the transcript can be rebuilt without recapturing.
+
+---
+
 ## 2026-09-07
 
 ### Added

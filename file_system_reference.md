@@ -293,6 +293,33 @@ params:
 
 **Returns:** Formatted text starting with `[OK] Indexes rebuilt successfully.` followed by the build output. If `load` is non-None, requested content is appended below a `=` separator. On failure, returns stdout/stderr for diagnosis.
 
+## Transcript (1)
+
+Custom MCP server capturing session transcripts from a claude.ai share page. **Runs natively on the host, not in the Docker stack** — it drives a real browser, and claude.ai's bot check refuses headless ones. See `System_Documentation/Transcript_Capture.md`.
+
+### `transcript:capture_session_transcript`
+Captures a public share page to a raw JSONL archive, then derives the readable markdown transcript from it. Writes two files: the transcript into the campaign's `Logs/`, and the raw capture into `World_Building/raw_transcript_archive/`.
+```
+params:
+  share_url: string        — https://claude.ai/share/<id>, publicly shared
+  campaign: string         — campaign folder name, e.g. "Old_Mill"
+  session: string          — zero-padded session number, e.g. "02"
+  in_game_date?: string    — in-game date/time from the checkpoint
+  location?: string        — where play ended
+  keywords?: string        — extra comma-separated tags
+  overwrite?: boolean      — replace an existing capture (default false)
+```
+
+**Getting the link (ask the player):** share button at the upper right of the conversation → select "only people invited" → open that dropdown → "anyone with the link" → Save → wait for it to verify → copy link. A still-restricted link redirects to sign-in and is refused with that as the reason.
+
+**Tell the player to stop sharing once it reports success.** The written files are the artifact; the link is only transport, and revoking it does not affect a completed capture.
+
+**`in_game_date` is not derivable from the capture.** Carry it from the checkpoint you just wrote — omitting it drops a field the transcript would otherwise have, and a later regeneration cannot recover it.
+
+**`keywords` must be plain words.** The FTS tokenizer splits on underscores and hyphens, so `session_2` indexes as `session` + `2` and narrows nothing. Session-level precision comes from `type_filter` and `category_filter`, not keywords.
+
+**Returns:** `[OK] Transcript captured.` plus both steps' output and the two written paths. On failure, an error naming the cause — a restricted link, a bot challenge, an unknown campaign folder, or an existing capture. **Nothing is written on a failed capture**, so there is no partial file to clean up. If capture succeeds but the cleaner fails, the raw archive is intact and the transcript can be rebuilt from it without recapturing.
+
 **Hardcoded paths:** The tool can only run the known build scripts and only read the known index files. No parameter accepts a path from the caller. The corpus-search server's database is read-only here as well — the rebuild path goes through the build script, not the server.
 
 **Timeout:** 300 seconds on the build subprocess — set high deliberately, because a cold vector build downloads the embedding model and re-embeds every document, which legitimately runs past a short timeout. Sub-second runtime in normal use (warm rebuild typically ~0.6s total).

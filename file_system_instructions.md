@@ -44,7 +44,9 @@ being broken rather than a server being absent.
 
 **Series Search Tools (3):** series-search:search_chapters, series-search:get_chapter, series-search:list_series (see SERIES SEARCH below). Ships without a database — see `System_Documentation/Series_Search_Server.md` > *Building a compatible database*.
 
-These three run as one Docker Compose stack built from `Python/`. See `System_Documentation/Architecture.md`.
+**Transcript Tools (1):** transcript:capture_session_transcript (see SESSION TRANSCRIPTS below)
+
+The first three run as one Docker Compose stack built from `Python/`. See `System_Documentation/Architecture.md`. The transcript server runs **natively on the host** instead — it drives a real browser, which a container cannot do without being refused by claude.ai's bot check.
 
 **Filesystem Tools (14):**
 - Read: filesystem:read_text_file, filesystem:read_multiple_files, filesystem:read_media_file (filesystem:read_file — DEPRECATED alias for read_text_file, still works)
@@ -312,6 +314,20 @@ Vector/hybrid require the index to have been built with embeddings; if absent th
 
 **Refreshing the index:** Use `index-tools:rebuild_indexes` (preferred — runs all three outputs in one pass via `build_indexes.py`). Manual alternative: `refresh_indexes.bat` (double-click from Explorer). Sub-second in normal use — document embeddings are cached by content hash, so a rebuild only re-embeds the files that actually changed. (The exception is a *cold* build — a fresh DB or the first run after an embedding-model change — which re-embeds everything and takes about a minute. Rare; not something you trigger casually.) Call `corpus-search:index_status` if you need to confirm freshness without rebuilding.
 
+## STEP 5A: SESSION TRANSCRIPTS
+
+**`transcript:capture_session_transcript(share_url, campaign, session, ...)`** — captures the verbatim transcript of a session from a claude.ai share link. Runs on the host, not in the Docker stack.
+
+**When:** at a checkpoint or session end, as part of the Post-Session Checklist. Ask the player whether they want to capture now; if they defer, write the stub instead and leave `status: awaiting-transcript`.
+
+**Ask the player to share first:** share button at the upper right of the conversation → select "only people invited" → open that dropdown → **"anyone with the link"** → Save → wait for it to verify → copy link. A link that is still restricted redirects to sign-in, and the tool refuses it saying so.
+
+**Tell them to stop sharing as soon as it reports success** (share settings gear → Stop sharing). The written files are the artifact; the link is only transport, and revoking it cannot affect a completed capture.
+
+**Pass `in_game_date` from the checkpoint you just wrote.** The capture cannot derive it, and a transcript regenerated later cannot recover it.
+
+**Never write transcript content from memory.** Reproducing a session from context is unverifiable — fidelity decays silently and you cannot say which passages drifted. See `Core_Rules/Templates/Session_Transcript_Stub.md`.
+
 ## STEP 6: SERIES SEARCH
 
 A custom MCP server (`Python/series_search_mcp_server.py`) exposes FTS5 search over an external prose-series database — long-form reference material held outside the corpus proper. **Which database is mounted and what it is used for is project-specific:** see `World_Building/Project_Profile.md` > SERIES SEARCH BINDING. Three tools:
@@ -529,6 +545,7 @@ Process: Read → identify exact target text → edit with verified string.
 - `corpus-search:get_section` — `path`, `heading?`, `level?`
 - `corpus-search:index_status` — no params
 - `index-tools:rebuild_indexes` — `load?`
+- `transcript:capture_session_transcript` — `share_url`, `campaign`, `session`, `in_game_date?`, `location?`, `keywords?`, `overwrite?`
 - `series-search:search_chapters` — `query`, `series?`, `db?`, `limit?`
 - `series-search:get_chapter` — `chapter_num`, `series?`, `db?`
 - `series-search:list_series` — `db?`

@@ -37,11 +37,14 @@ while it stays rare.
 
 ## 2026-09-08
 
-**Action required:** register the new server and restart your MCP client. **Quit the client first** —
-Claude Desktop holds this file in memory and rewrites it on exit, so an edit made while it is
-running is silently discarded, and you are left with documentation describing a tool that never
-appears. Quit fully (tray icon → Quit), edit, then start it again. Add to
-`claude_desktop_config.json` (or your client's equivalent):
+**Action required:** register the new server and restart your MCP client. **Quit the client first,
+then find the config by searching rather than by path.** Claude Desktop holds this file in memory
+and rewrites it on exit, so an edit made while it is running is silently discarded — and on a
+packaged (MSIX/Store) install `%APPDATA%\Claude` is a redirection that only exists *while Desktop
+runs*, so quitting removes the very path most instructions name. The real file then lives under
+`%LOCALAPPDATA%\Packages\Claude_<id>\LocalCache\Roaming\Claude\`. Quit fully, locate it with
+`Get-ChildItem $env:APPDATA,$env:LOCALAPPDATA -Filter claude_desktop_config.json -Recurse -Force`,
+edit that file, then start Desktop. Add to it (or to your client's equivalent):
 
 > ```json
 > "transcript": {

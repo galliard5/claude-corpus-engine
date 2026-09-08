@@ -44,7 +44,8 @@ before upgrading an existing checkout.
   Chromium-family browser you already have. Optional — nothing else depends on them. See
   *What isn't included*.
 - Windows paths are used throughout the docs. The stack itself is portable; the `.bat` helpers and
-  some path examples are not.
+  some path examples are not. **Transcript capture is the exception that does not port at all** —
+  it reads claude.ai's share pages directly. See *What isn't included*.
 
 ## Getting started
 
@@ -91,10 +92,18 @@ absent tool fails in a way that looks like the model misbehaving rather than a s
   is in `requirements.txt` — install them with pip the first time you capture a session. Without
   them the rest of the system is unaffected.
 
-  This half of the system is also the most exposed to things outside the repository: it reads a
-  share page through the browser, so it depends on claude.ai's page structure, which is
-  undocumented and can change without notice. `Transcript_Capture.md` records what it keys off and
-  what breaks if that moves.
+  **This part is Claude-specific in a way the rest of the engine is not, and does not port.**
+  Everything else here talks to a model through MCP and would work with another client. Transcript
+  capture instead reads claude.ai's own share pages — the share URL form, the page structure, and
+  the `You said:` / `Claude responded:` markers are all specific to that web surface, and all
+  undocumented. Another vendor would need the mechanism rebuilt, not reconfigured, assuming it even
+  offers a shareable rendered conversation to read.
+
+  It has been tested against nothing else, and the author has no way to test it against anything
+  else, so treat any claim that it transfers as unverified. It is also the most exposed part of the
+  repository to outside change: a claude.ai frontend redesign breaks capture even when the
+  conversation and sharing both still work. `Transcript_Capture.md` records exactly what it keys
+  off, so a reader porting or repairing it knows what to look for.
 
 ## Design notes
 

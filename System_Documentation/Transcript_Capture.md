@@ -117,6 +117,14 @@ Neither package is in `Python/requirements.txt`, which is baked into the contain
 
 ## Known limits
 
+- **This does not port to another vendor, and has not been tested against one.** The rest of the
+  engine reaches a model through MCP and is client-agnostic in principle. This reads claude.ai's
+  own web surface: the `https://claude.ai/share/<id>` URL form, the page structure, and the
+  `You said:` / `Claude responded:` role markers. None of that is a standard, none of it is
+  documented, and none of it has an equivalent guaranteed to exist elsewhere. Another provider
+  would need this rebuilt rather than reconfigured — and only if it offers a shareable rendered
+  conversation to read in the first place. Treat any claim that the method transfers as unverified;
+  nobody has tried it.
 - **The scraper is coupled to claude.ai's DOM.** It keys off `[data-test-render-count]`, `time[datetime]` and the accessibility-node pattern — undocumented internals that can change without notice. A frontend redesign breaks capture even when the conversation and sharing both work.
 - **Re-deriving a capture depends on three things outside your control**: the conversation still existing in the account, sharing still working this way, and the page still being recognisable to the scraper. Re-sharing a conversation does reproduce it exactly — verified across three separate share links yielding identical message counts and timestamps — but that is a courtesy of the platform, not a guarantee.
 - **A share link is revocable, mutable state.** Toggling its visibility can invalidate it outright: a link that loaded seconds earlier returned *"Conversation not found"* after a visibility change. Never treat a share URL as a durable reference; scrape promptly and let the written file be the record.

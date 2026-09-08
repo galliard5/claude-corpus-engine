@@ -107,6 +107,28 @@ An existing capture is refused unless `overwrite=true`. A failed capture writes 
 
 `check_schema_drift.py` probes this server through `NATIVE_STDIO_SERVERS`, spawning it directly rather than reading an MCP client's configuration, so the check works on a machine with no client installed.
 
+## Registering it — quit the client first
+
+Claude Desktop reads `claude_desktop_config.json` at startup, holds it in memory, and **writes its
+own copy back when it quits.** An entry added while Desktop is running is therefore discarded on
+the next restart, with no error and no log line: the config simply reverts, and the tool never
+appears. Observed directly — the file's modification time moved to the moment of quit and its
+server list matched a pre-edit backup byte for byte.
+
+Quit Desktop fully (tray icon → Quit), add the entry, then start it. The same caution applies to
+any edit of that file, not just this server.
+
+```json
+"transcript": {
+  "command": "python",
+  "args": ["<corpus>/Python/transcript_mcp_server.py"],
+  "env": {"CORPUS_ROOT": "<corpus>"}
+}
+```
+
+An MCP client reads the tool list once at connection time, so the client must be restarted before
+the tool is callable even when the config is correct.
+
 ## Requirements
 
 `playwright` and `markdownify` on the **host** interpreter, plus a Chromium-family browser already installed. Playwright drives that browser via `channel="chrome"`, so the bundled ~150 MB Chromium download is not needed.

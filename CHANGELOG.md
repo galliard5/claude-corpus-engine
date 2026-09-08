@@ -37,7 +37,10 @@ while it stays rare.
 
 ## 2026-09-08
 
-**Action required:** register the new server and restart your MCP client. Add to
+**Action required:** register the new server and restart your MCP client. **Quit the client first** —
+Claude Desktop holds this file in memory and rewrites it on exit, so an edit made while it is
+running is silently discarded, and you are left with documentation describing a tool that never
+appears. Quit fully (tray icon → Quit), edit, then start it again. Add to
 `claude_desktop_config.json` (or your client's equivalent):
 
 > ```json

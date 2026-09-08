@@ -35,6 +35,34 @@ while it stays rare.
 
 ---
 
+## 2026-09-07
+
+### Changed
+
+- **A search that finds nothing no longer counts as proof the fact is unauthored.** Both
+  `Core_Rules/core_rules.md` (*Retrieval Is Not Salience*) and `file_system_instructions.md`
+  previously said an empty result meant the fact was not established. That is not sound given
+  conditions this repository documents elsewhere: a stale index, keyword-only matching in `fts`
+  mode, and the scope exclusions in `indexer.cfg` all return nothing for material that is present.
+  Both now draw the distinction between **not found** and **does not exist**, and require freshness,
+  wording and scope to be checked before a detail is treated as unauthored.
+
+  The consequence this closes is not a missing detail. An unconfirmed absence read as a confirmed
+  one is how a record that exists gets replaced by an invention — which the next checkpoint then
+  writes to the corpus as canon. The rules' original purpose is unchanged and both are stricter
+  than before: a *confirmed* absence still means the fact is unfixed, and still is not licence to
+  invent one.
+
+  No tool, schema or configuration change; nothing to rebuild or reconnect. The two files had also
+  drifted apart in strength, with `file_system_instructions.md` alone mentioning the freshness
+  check — they now agree.
+
+  This came out of a comparative review against [RPG OS](https://github.com/croatianrdy2defend-create/RPG-OS),
+  whose separation of *not found* from *does not exist* is the distinction adopted here. See
+  *Credits & acknowledgements* in `README.md`.
+
+---
+
 ## 2026-09-05
 
 **Action required:** rebuild the `corpus-search` image and reconnect your MCP client —

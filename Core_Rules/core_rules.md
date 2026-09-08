@@ -557,6 +557,23 @@ Format:
 
 Only list statuses the character is currently aware of. Omit statuses that are still hidden from them. Do not list resolved conditions. Update the block each time choices are presented — if a status clears or a new one appears mid-scene, the next block reflects that.
 
+**Scene changes are tagged in the same block.** When the next beat begins a new scene — a location change, a significant time skip, or a different set of people present — add a third line naming where it starts and who is there:
+
+---
+`[ Time: first light ]`
+`[ Status: Tired ]`
+`[ Scene: the mill yard — the warden, the steward ]`
+
+---
+
+**The tag looks forward, not back.** It sits immediately before the choice options, so it names the scene the player is about to enter — never the one just narrated. A tag describing a scene that has already ended points at the wrong stretch of play.
+
+**Only at a transition.** Time and status refresh in every block; this line appears solely when the scene actually changes. Tagged on every turn it marks nothing and becomes noise.
+
+**The names after the dash are a witness list.** They record who could perceive what happens in that scene, and they are read back later as evidence of who knew what — see SECTION 8: INFORMATION & PERCEPTION, particularly *What NPCs Know*. Name everyone present, the player character included. If someone arrives or leaves partway through, that is a new scene: tag it again.
+
+**If you are not certain who is present, omit the tag rather than guess.** A missing tag costs one scene boundary, and that is recoverable. A wrong name grants an NPC knowledge of something they never witnessed, and nothing downstream can tell a guessed witness from an observed one.
+
 ---
 
 SECTION 7: NPC ENGINE

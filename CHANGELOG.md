@@ -37,7 +37,56 @@ while it stays rare.
 
 ## 2026-09-07
 
+### Added
+
+- **The GM now tags scene changes in the status block.** When the next beat begins a new scene,
+  `Core_Rules/core_rules.md` (SECTION 6 > *Display*) adds a third line beside the existing time and
+  status lines: `` `[ Scene: the mill yard — the warden, the steward ]` ``. It appears only at a
+  transition, never on every turn.
+
+  The names after the dash are a **witness list** — a record of who could perceive what happens in
+  that scene, which is what the Information Firewall needs and has never had in durable form. Until
+  now, who was present in a given scene existed only implicitly in prose, and reconstructing it
+  afterwards meant guessing. The rule is explicit that an uncertain cast should be omitted rather
+  than guessed: a missing tag costs one boundary and is recoverable, while a wrong name grants an
+  NPC knowledge of something they never witnessed, and nothing downstream can distinguish a guessed
+  witness from an observed one.
+
+  The tag is **forward-looking**. It sits immediately before the choice options, so it names the
+  scene the player is about to enter, not the one just narrated.
+
+  Nothing breaks if it is absent — it is an addition to a block the GM already writes, and every
+  existing rule behaves as before. Sessions recorded before this change simply carry no scene
+  boundaries.
+
 ### Changed
+
+- **Session transcripts are now captured mechanically instead of pasted by hand.**
+  `Session_Transcript_Stub.md` and `Post_Session_Checklist.md` previously asked the player to paste
+  the conversation into a stub and hand-clean it. The transcript is now captured from a public
+  share link by `Python/capture_transcript.py` and rendered by `Python/clean_transcript.py`, which
+  store the message HTML as the archive copy and derive the readable markdown from it. Both run on
+  the host, not in the Docker stack — capture drives a real browser. Their dependencies
+  (`playwright`, `markdownify`) are deliberately **not** in `Python/requirements.txt`, which is
+  baked into the MCP server images; install them with pip when you first capture a session. Keeping the raw capture means a later fix to the cleaner can be re-applied to
+  old sessions rather than the original having been destroyed by the first cleanup pass.
+
+  This matters beyond convenience: the visible text of a rendered conversation silently discards
+  everything markdown carries. Measured on one real session — 142 italics, 103 code spans, 52
+  horizontal rules, 2 tables and 16 headings flattened, and link destinations lost outright. A
+  horizontal rule has no text at all, so 52 authored divisions were vanishing without leaving
+  evidence they had existed.
+
+  The stub remains, reduced to frontmatter, for sessions where capture is deferred.
+
+- **The stated reason Claude must not write a transcript was wrong, and is replaced.** Both files
+  claimed Claude "has no way to *copy* a conversation" and likened it to an LLM rolling dice. Prior
+  turns are in context, so that is false, and the dice comparison inverts the situation — with dice
+  the information does not exist, whereas here it does. The rule was correct; its justification was
+  not, and a HARD RULE resting on an argument a model can see through is one it can talk itself
+  past. It now rests on the real reasons: reproduction is unverifiable, fidelity decays silently
+  with no confidence signal, compaction lands exactly when the transcript is wanted, and a capture
+  tool selects the text rather than regenerating it.
 
 - **A search that finds nothing no longer counts as proof the fact is unauthored.** Both
   `Core_Rules/core_rules.md` (*Retrieval Is Not Salience*) and `file_system_instructions.md`

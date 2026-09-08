@@ -27,11 +27,13 @@ File location: `World_Building/[Setting]/Scenarios/[Campaign]/Logs/[Campaign_Nam
 
 Create the `Logs/` directory if it does not exist. Use the format in `Session_Transcript_Stub.md`.
 
-**Write the frontmatter and the paste marker only.** Fill in campaign, session number, in-game date, location, and real date from the checkpoint you just wrote — that metadata is what makes the file findable later, and it's the part Claude actually knows. Set `status: awaiting-transcript`.
+**Ask the player for a share link.** The transcript is captured mechanically from the rendered conversation — `Session_Transcript_Stub.md` has the sharing steps and the two scripts. Tell the player the session is at a capture point and let them decide whether to do it now.
 
-**Do not write transcript content.** Claude cannot copy a conversation; it can only regenerate one, which paraphrases and drops turns while looking verbatim. A confabulated transcript is worse than none — it reads authoritative and gets trusted. If asked to fill one in, say so plainly and offer the stub.
+**If they capture now,** the scripts write the transcript and its raw archive copy; there is no stub to create.
 
-Then tell the player the stub is ready and where it is. They paste the session in, strip the out-of-character material, and set `status: complete`.
+**If they defer,** write the stub — frontmatter only. Fill in campaign, session number, in-game date, location, and real date from the checkpoint you just wrote; that metadata is what makes the file findable later, and it is the part Claude actually knows. Set `status: awaiting-transcript` so the gap is findable, and leave `status` alone afterwards — only the player knows whether the capture actually happened.
+
+**Never write transcript content from memory.** Reproducing a session from context is unverifiable: fidelity decays silently over length and Claude cannot say which passages drifted. A confabulated transcript is worse than none, because it reads authoritative and gets trusted. If asked, say so plainly and offer the capture route.
 
 ---
 

@@ -19,7 +19,7 @@ explains both.
 
 | Directory | Contents |
 |---|---|
-| `Python/` | The index builder, three custom MCP servers (corpus-search, index-tools, series-search), Docker Compose stack, and a pinned build of the upstream filesystem MCP |
+| `Python/` | The index builder, three custom MCP servers (corpus-search, index-tools, series-search), the session-transcript capture pair, Docker Compose stack, and a pinned build of the upstream filesystem MCP |
 | `Core_Rules/` | The GM rules layer — narrative rules, scenario extraction protocol, model-selection guidance, and 18 templates |
 | `System_Documentation/` | Reference docs for everything in `Python/`. Start at its `README.md` |
 
@@ -73,6 +73,11 @@ absent tool fails in a way that looks like the model misbehaving rather than a s
   than a random one. That server is third-party. The rules include a fallback for running without
   it — the short version is that you disclose it rather than quietly inventing numbers.
 - **Symbolic math.** Optional; nothing here hard-depends on it.
+- **A browser and two pip packages, for transcript capture.** `Python/capture_transcript.py` reads
+  a public claude.ai share page and needs `playwright` plus a Chromium-family browser already on
+  the host; `Python/clean_transcript.py` needs `markdownify`. Both run on the host rather than in
+  the Docker stack, so neither is in `requirements.txt` — install them with pip the first time you
+  capture a session. Without them the rest of the system is unaffected.
 
 ## Design notes
 

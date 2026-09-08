@@ -13,6 +13,7 @@ This is the verbose companion to `Python_Scripts_Protocol.md`. Where the protoco
 
 - **Python version:** 3.14.3 (last verified). Scripts should not rely on version-specific behaviour below 3.10.
 - **Script location (since the 2026-06-12 repo split):** the index builder and MCP servers stay in **corpus-infra** at `D:\Claude\filesystem\Python\`; the maintenance/conversion scripts moved to their own repos under `D:\Claude\projects\` (corpus-tools, series-pipeline, pdf-tools, worldographer, bgm).
+- **Exception — the transcript pipeline (2026-09-08):** `capture_transcript.py` and `clean_transcript.py` live in `Python/` despite being host-run tools, because `Core_Rules/Templates/Session_Transcript_Stub.md` documents them and that file ships publicly. A rule that names a script nobody can obtain is the failure mode the README's *What isn't included* section exists to prevent. They are **not** in the Docker image (the Dockerfile copies by explicit filename) and their deps are **not** in `requirements.txt`, which would bloat every server image for something no container runs.
 - **Invocation:** Always use `python`, not `python3`, in CMD calls and `.bat` files. The Windows PATH on this machine resolves `python` to the correct interpreter; `python3` may not resolve at all.
 - **Working directory & corpus paths:** Each script runs from its own repo dir. Scripts that live *outside* the corpus resolve corpus paths via the `CORPUS_ROOT` env var (absolute fallback `D:\Claude\filesystem`), matching the MCP servers — **not** via `..`.
 

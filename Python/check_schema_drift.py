@@ -57,6 +57,15 @@ HTTP_SERVERS = {
 }
 FS_PREFIX = "filesystem"
 
+# prefix -> (script, argv) for MCP servers that run natively on the host over stdio rather than
+# in the compose stack. Without this the linter's coverage stops at the containers, and a tool
+# documented for a host server sits in a blind spot - which is exactly where a drift check is
+# least useful. Spawned directly rather than read out of the MCP client's config, so the check
+# works on a machine where the client is not installed.
+NATIVE_STDIO_SERVERS = {
+    "transcript": HERE / "transcript_mcp_server.py",
+}
+
 
 # --------------------------------------------------------------------------- #
 # Live introspection
@@ -91,11 +100,37 @@ async def _stdio_tools(image):
                 return {t.name: _schema_to_params(t.inputSchema) for t in res.tools}
 
 
+async def _native_tools(script):
+    """Introspect a host-run stdio server by spawning it with this interpreter."""
+    params = StdioServerParameters(
+        command=sys.executable,
+        args=[str(script)],
+        env={**os.environ, "CORPUS_ROOT": str(HERE.parent)},
+    )
+    with open(os.devnull, "w") as devnull:
+        async with stdio_client(params, errlog=devnull) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                res = await session.list_tools()
+                return {t.name: _schema_to_params(t.inputSchema) for t in res.tools}
+
+
 async def _introspect(fs_image, do_filesystem, timeout):
     live, reached, skipped = {}, set(), {}
     for prefix, url in HTTP_SERVERS.items():
         try:
             live[prefix] = await asyncio.wait_for(_http_tools(url), timeout)
+            reached.add(prefix)
+        except Exception as e:
+            live[prefix] = {}
+            skipped[prefix] = f"{type(e).__name__}: {e}"
+    for prefix, script in NATIVE_STDIO_SERVERS.items():
+        if not script.exists():
+            live[prefix] = {}
+            skipped[prefix] = f"script not found: {script.name}"
+            continue
+        try:
+            live[prefix] = await asyncio.wait_for(_native_tools(script), timeout)
             reached.add(prefix)
         except Exception as e:
             live[prefix] = {}

@@ -109,36 +109,14 @@ An existing capture is refused unless `overwrite=true`. A failed capture writes 
 
 ## Registering it — quit the client first
 
-Two things bite here, and together they contradict the obvious instructions.
+**Quit Desktop before editing its config, and find the file by searching rather than by path.**
+Two silent faults apply: Desktop reverts config edits made while it is running, and on a packaged
+(MSIX/Store) install the usual `%APPDATA%\Claude` path exists *only* while it runs — so quitting
+removes the very path most instructions name. Registering this server hit both.
 
-**Desktop reverts edits made while it is running.** It reads `claude_desktop_config.json` at
-startup, holds it in memory, and writes its own copy back when it quits. An entry added while it is
-running is discarded on the next restart, with no error and no log line: the config simply reverts
-and the tool never appears. Observed directly — the file's modification time moved to the moment of
-quit, and its server list matched a pre-edit backup byte for byte.
-
-**On a packaged install, the documented path only exists while Desktop is running.** Claude Desktop
-may be installed as an MSIX/Store package, in which case `%APPDATA%\Claude` is a redirection into
-the package's private storage, and it disappears when the app exits. The real file is at:
-
-```
-%LOCALAPPDATA%\Packages\Claude_<id>\LocalCache\Roaming\Claude\claude_desktop_config.json
-```
-
-So "quit first, then edit `%APPDATA%\Claude\...`" is self-defeating on such an install: quitting
-removes the path the instruction names, and a reader who follows it finds nothing and reasonably
-concludes something is broken. A non-packaged (`.exe` installer) install uses `%APPDATA%\Claude`
-directly and does not have this problem.
-
-**The procedure that works on both:** quit Desktop fully (tray icon → Quit), locate the config by
-searching rather than by assuming a path —
-
-```powershell
-Get-ChildItem $env:APPDATA,$env:LOCALAPPDATA -Filter claude_desktop_config.json -Recurse -Force -ErrorAction SilentlyContinue
-```
-
-— edit the file it finds, then start Desktop. The same caution applies to any edit of that file,
-not only to this server.
+Full symptoms, the real packaged-install location, and the procedure that works on either install
+type are in `Troubleshooting.md` > *a newly registered MCP server never appears*. Not repeated here,
+because two copies of a fix drift apart and the reader then has to guess which is current.
 
 ```json
 "transcript": {

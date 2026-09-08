@@ -1,7 +1,7 @@
 ---
 name: System Troubleshooting
 type: documentation-reference
-keywords: [troubleshooting, stale_index, mcp_restart, search_empty, hygiene, corrupted_db]
+keywords: [troubleshooting, stale_index, mcp_restart, search_empty, hygiene, corrupted_db, claude_desktop_config, msix, packaged_install, server_registration]
 description: Cross-component issues for the corpus infrastructure - symptoms, diagnoses, and fixes.
 ---
 
@@ -78,6 +78,39 @@ docker compose build --no-cache
 docker compose up -d
 ```
 Then restart Claude Desktop — `mcp-remote` doesn't auto-reconnect when a container restarts, so the old connection hangs until the app restarts. See `Docker_Filesystem.md` > Restart procedure for the full breakdown of when a plain `restart` is enough versus when a rebuild is required.
+
+## Symptom: a newly registered MCP server never appears, and the config edit is gone
+
+**Diagnosis** — Two separate faults, both silent, and they mask each other. They apply to *any* edit of `claude_desktop_config.json`, not just adding a server.
+
+**1. Desktop reverts edits made while it is running.** It reads the config at startup, holds it in memory, and writes its own copy back when it quits. An entry added while it is running is discarded on the next restart. There is no error, no log line, and the file is valid JSON before and after — the only symptom is a documented tool that isn't there, which reads as a broken server rather than a lost edit. Confirmed by observation: after a restart the file's modification time was the moment of quit, and its server list matched a pre-edit backup byte for byte, with the added entry simply absent.
+
+**2. On a packaged install, the documented path exists only while Desktop runs.** Claude Desktop may be installed as an MSIX/Store package. In that case `%APPDATA%\Claude` is a redirection into the package's private storage, present while the app runs and **gone once it exits**. So the obvious remedy for fault 1 — quit, then edit `%APPDATA%\Claude\claude_desktop_config.json` — is self-defeating: quitting removes the path the instruction names. A reader finds no file where everything says one should be and concludes something is broken.
+
+The real file on a packaged install:
+
+```
+%LOCALAPPDATA%\Packages\Claude_<publisherid>\LocalCache\Roaming\Claude\claude_desktop_config.json
+```
+
+`Claude_<publisherid>` is the MSIX package family name — constant for a given build of the app, not per-user; only the `C:\Users\<you>` portion varies. A non-packaged (`.exe` installer) install uses `%APPDATA%\Claude` directly and has neither problem with the path, though fault 1 still applies.
+
+**Fix — works on both install types:**
+
+1. Quit Claude Desktop **fully** (tray icon → Quit; end the task if it hangs).
+2. Locate the config by searching rather than assuming a path:
+   ```powershell
+   Get-ChildItem $env:APPDATA,$env:LOCALAPPDATA -Filter claude_desktop_config.json -Recurse -Force -ErrorAction SilentlyContinue | Select-Object FullName,Length,LastWriteTime
+   ```
+   Ignore any hit under a `Claude-3p` directory — that is a separate, much smaller file.
+3. Back up, then edit the file the search found.
+4. Start Desktop.
+
+**Verify it took**, rather than trusting that it did:
+```cmd
+python Python\check_schema_drift.py --no-pause
+```
+The linter introspects servers directly, so it reports the new server whether or not Desktop connected to it. If the linter sees the tool and chat does not, the config is right and the problem is Desktop's connection — restart it again. If neither sees it, the edit did not survive: check the file's modification time against the moment you quit.
 
 ## Symptom: search_index.db gets corrupted
 

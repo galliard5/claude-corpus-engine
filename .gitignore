@@ -32,6 +32,10 @@ __pycache__/
 *.pyd
 
 # --- Local / machine-specific ---
+# Per-build telemetry appended by build_indexes.py. Machine-specific operational
+# data with no meaning on another checkout — tracking it would conflict on every
+# pull, and it is regenerated one line at a time by simply building the index.
+/Python/build_history.jsonl
 .env
 .obsidian/
 Thumbs.db

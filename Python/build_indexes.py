@@ -30,6 +30,18 @@ Replaces: build_directory_indexes.py + build_search_index.py
 #   whenever present (previously gated on skipped>0, which silently swallowed a
 #   vector-lane crash), and a failed vector step reports "FAILED" instead of
 #   an innocent-looking "Vectors indexed: 0".
+#
+# changed 2026-09-08: added a build-history log — one JSON object per build
+#   appended to Python/build_history.jsonl (gitignored). Motivation: every
+#   performance figure in the docs was a hand-measured snapshot with no way to
+#   notice it going stale, and no way to tell corpus growth apart from a
+#   regression. Carries a walk / dir-index / fts / embed phase split, which did
+#   not exist before (one perf_counter pair for the whole run), and the volume
+#   of content actually indexed. build_search_db now returns a SearchStats
+#   dataclass rather than a 7-tuple. The log records raw signals, not
+#   classifications: "cold build" is derived by the reader, so the definition
+#   can change later without invalidating rows. Writing it can never fail a
+#   build. Surfaced to chat by search_mcp_server.index_status.
 
 Usage:
     python build_indexes.py                   # reads indexer.cfg, writes all outputs
@@ -41,12 +53,14 @@ Usage:
 import argparse
 import fnmatch
 import hashlib
+import json
 import os
 import re
 import sqlite3
 import subprocess
 import sys
 import time
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -75,6 +89,19 @@ DB_FILENAME       = "search_index.db"
 # to the same directory, controlled by [paths] index_directory in indexer.cfg.
 # The MCP servers (search_mcp_server.py, index_tools_mcp_server.py) hardcode
 # their copy of this path — update them in lockstep if the layout changes.
+
+# --- Build history ------------------------------------------------------------
+# One JSON object per build, appended. Deliberately NOT in index_directory: the
+# log's whole purpose is to outlive the index, and index_directory is both
+# gitignored and freely configurable to an absolute path anywhere. It lives
+# beside this script instead, which also puts it inside the corpus mount — and
+# index-tools mounts /corpus read-write, so container-invoked rebuilds append to
+# the same file the host .bat writes rather than splitting the history in two.
+HISTORY_PATH   = Path(__file__).parent / "build_history.jsonl"
+HISTORY_SCHEMA = 1
+# Not rotation — at ~300 bytes a build this is decades away. It exists so a
+# runaway loop announces itself instead of quietly filling the disk.
+HISTORY_WARN_BYTES = 5 * 1024 * 1024
 
 
 # ---------------------------------------------------------------------------
@@ -586,6 +613,36 @@ def _build_vectors(cur, pending_vectors: list) -> tuple[int, int, int]:
     return len(pending_vectors), embedded, reused, pruned
 
 
+@dataclass
+class SearchStats:
+    """Everything the search-index build learned about itself.
+
+    Replaces what used to be a 7-tuple return. The tuple was already at the
+    edge of readability, and the build log needs several more numbers out of
+    this function — named fields keep the call site honest as that list grows.
+    """
+    indexed:       int = 0
+    vec_indexed:   int = 0
+    vec_embedded:  int = 0
+    vec_reused:    int = 0
+    vec_pruned:    int = 0
+    skipped:       int = 0
+    errors:        list = field(default_factory=list)
+    # Bytes of body text actually inserted into the index, post-truncation —
+    # not bytes on disk. A better predictor of embed cost than file count,
+    # since a corpus can grow in volume without gaining files.
+    content_bytes: int = 0
+    # Phase split. fts_s covers read + parse + insert; embed_s covers the
+    # vector lane alone, which is the expensive half and the one that would
+    # explain a regression.
+    fts_s:         float = 0.0
+    embed_s:       float = 0.0
+
+    @property
+    def vector_failed(self) -> bool:
+        return any(path == "<vector index>" for path, _ in self.errors)
+
+
 def build_search_db(
     search_files:    list[Path],
     root:            Path,
@@ -593,7 +650,7 @@ def build_search_db(
     context_default: int,
     context_limits:  list,
     build_vectors:   bool = True,
-) -> tuple[int, int, int, int, int, int, list]:
+) -> SearchStats:
     """
     Drop and rebuild the FTS5 search index from scratch.
 
@@ -607,8 +664,12 @@ def build_search_db(
     after the FTS inserts, reusing cached vectors for unchanged content. If the
     deps are absent, the vector step is skipped and only the FTS index is produced.
 
-    Returns (indexed, vec_indexed, vec_embedded, vec_reused, vec_pruned, skipped, errors).
+    Returns a SearchStats carrying the counts, the error list, indexed content
+    volume, and the FTS / embed phase split.
     """
+    stats = SearchStats()
+    fts_start = time.perf_counter()
+
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(db_path)
     # Ride out a concurrent reader's lock (the search MCP server opens the DB
@@ -657,9 +718,7 @@ def build_search_db(
         """
     )
 
-    indexed = 0
-    skipped = 0
-    errors: list[tuple[str, str]] = []
+    errors = stats.errors
     # (fts_rowid, content_hash, embed_text) collected during the loop, then turned
     # into vectors in one batch after all FTS rows are inserted — reusing cached
     # embeddings for unchanged content. corpus_vec shares corpus_fts's rowid.
@@ -678,7 +737,7 @@ def build_search_db(
             raw = read_file_content(full_path, limit)
         except Exception as e:
             errors.append((str(rel_path), f"Read error: {e}"))
-            skipped += 1
+            stats.skipped += 1
             continue
 
         # Frontmatter only meaningful for markdown
@@ -711,7 +770,8 @@ def build_search_db(
                 "VALUES (?, ?, ?, ?, ?, ?)",
                 (path_str, name, keywords, description, category, body),
             )
-            indexed += 1
+            stats.indexed += 1
+            stats.content_bytes += len(body.encode("utf-8"))
             if want_vectors:
                 # corpus_fts is an FTS5 virtual table: rowids are assigned
                 # sequentially on insert, so lastrowid is this doc's rowid.
@@ -719,19 +779,26 @@ def build_search_db(
                 pending_vectors.append((cur.lastrowid, _embed_hash(embed_text), embed_text))
         except sqlite3.Error as e:
             errors.append((str(rel_path), f"DB insert error: {e}"))
-            skipped += 1
+            stats.skipped += 1
 
     # --- Vector lane: turn each indexed doc into a corpus_vec row, reusing cached
     #     embeddings for unchanged content so the model only runs on new/changed
     #     docs (the expensive step). ---
-    vec_indexed = vec_embedded = vec_reused = vec_pruned = 0
+    stats.fts_s = time.perf_counter() - fts_start
     if want_vectors and pending_vectors:
+        embed_start = time.perf_counter()
         try:
-            vec_indexed, vec_embedded, vec_reused, vec_pruned = _build_vectors(cur, pending_vectors)
+            (stats.vec_indexed, stats.vec_embedded,
+             stats.vec_reused, stats.vec_pruned) = _build_vectors(cur, pending_vectors)
         except Exception as e:
             # Embedding/vector failure must not lose the FTS index — warn and
             # leave corpus_vec empty so search falls back to FTS cleanly.
             errors.append(("<vector index>", f"Embedding error: {e}"))
+        finally:
+            # Timed in `finally` so a failed embed still records how long it
+            # burned before failing — a slow failure and a fast one are
+            # different diagnoses.
+            stats.embed_s = time.perf_counter() - embed_start
 
     # Guarantee the connection closes even if commit fails, so a failed rebuild
     # never leaks the handle (which would block the next run's writes).
@@ -743,7 +810,7 @@ def build_search_db(
         conn.commit()
     finally:
         conn.close()
-    return indexed, vec_indexed, vec_embedded, vec_reused, vec_pruned, skipped, errors
+    return stats
 
 
 # ---------------------------------------------------------------------------
@@ -778,6 +845,48 @@ def _run_schema_check() -> None:
             print(f"  [!] drift check exit code {result.returncode} — review the lines above")
     except Exception as e:
         print(f"  [!] schema drift check could not run: {e}")
+
+
+# ---------------------------------------------------------------------------
+# Build history log
+# ---------------------------------------------------------------------------
+
+def _detect_invocation() -> str:
+    """Who launched this build: "host" (refresh_indexes.bat / CLI) or "container".
+
+    index_tools_mcp_server.py sets CORPUS_BUILD_INVOCATION explicitly, which is
+    the authoritative signal — that server is the one caller we actually want to
+    distinguish. /.dockerenv is the fallback for anything else running inside a
+    container, and "host" is the default. Setting the env var is not a second
+    write site: the log is still written here and only here.
+    """
+    declared = os.environ.get("CORPUS_BUILD_INVOCATION", "").strip().lower()
+    if declared in ("host", "container"):
+        return declared
+    return "container" if Path("/.dockerenv").exists() else "host"
+
+
+def _log_build(record: dict) -> None:
+    """Append one build record to HISTORY_PATH. Never raises.
+
+    Telemetry must not be able to fail a build that otherwise succeeded — a
+    logging fault that returned a non-zero exit would make refresh_indexes.bat
+    report failure over a perfectly good index. Every error here is swallowed
+    after a one-line notice.
+
+    The write is a single write() of one complete line in append mode, so the
+    .bat double-clicked while chat calls rebuild_indexes interleaves whole
+    records instead of shearing one in half.
+    """
+    try:
+        if HISTORY_PATH.exists() and HISTORY_PATH.stat().st_size > HISTORY_WARN_BYTES:
+            print(f"  [!] {HISTORY_PATH.name} is over "
+                  f"{HISTORY_WARN_BYTES // (1024 * 1024)} MB - trim or archive it.")
+        line = json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n"
+        with HISTORY_PATH.open("a", encoding="utf-8") as fh:
+            fh.write(line)
+    except Exception as e:
+        print(f"  [!] build history not written: {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -838,17 +947,24 @@ def main() -> int:
     context_default, context_limits       = parse_context_limits(cfg)
 
     db_path = index_dir / DB_FILENAME
+    # Sampled before the build, not after — build_search_db creates the file, so
+    # asking afterwards would always answer yes. This is the raw signal behind
+    # "was it a cold build"; the classification is left to whoever reads the log.
+    db_existed_at_start = db_path.exists()
 
     # --- Walk (single pass) ---
+    walk_start = time.perf_counter()
     dir_entries, search_files = walk_and_collect(
         root, dir_excluded, dir_shallow,
         search_excluded, file_mode, file_patterns,
     )
+    walk_s = time.perf_counter() - walk_start
 
     now_utc   = datetime.now(timezone.utc)
     now_local = datetime.now().astimezone()
 
     # --- Directory index outputs ---
+    dir_index_start  = time.perf_counter()
     dirs_only_lines  = render_dirs_only(dir_entries)
     with_files_lines = render_with_files(dir_entries)
 
@@ -870,9 +986,10 @@ def main() -> int:
         with_files_path.write_text(with_files_content, encoding="utf-8")
         dirs_only_out  = str(dirs_only_path)
         with_files_out = str(with_files_path)
+    dir_index_s = time.perf_counter() - dir_index_start
 
     # --- Search index ---
-    indexed, vec_indexed, vec_embedded, vec_reused, vec_pruned, skipped, errors = build_search_db(
+    stats = build_search_db(
         search_files, root, db_path, context_default, context_limits,
         build_vectors=not args.no_vectors,
     )
@@ -898,8 +1015,8 @@ def main() -> int:
     print(f"    claude_section_end:  {with_files_end}")
     print()
     print(f"  Search DB:          {db_path}")
-    print(f"  Files indexed:      {indexed}")
-    vec_failed = any(path == "<vector index>" for path, _ in errors)
+    print(f"  Files indexed:      {stats.indexed}")
+    vec_failed = stats.vector_failed
     if args.no_vectors:
         print(f"  Vector index:       skipped (--no-vectors)")
     elif not embedding.AVAILABLE:
@@ -908,17 +1025,57 @@ def main() -> int:
         print(f"  Vector index:       [!] FAILED — corpus_vec left empty; vector/hybrid "
               f"search degraded to FTS until a rebuild succeeds (error below)")
     else:
-        print(f"  Vectors indexed:    {vec_indexed}  [{embedding.MODEL_NAME}, {embedding.EMBED_DIM}-dim]")
-        print(f"    embedded {vec_embedded} new, reused {vec_reused}, pruned {vec_pruned} stale")
-    if skipped:
-        print(f"  Files skipped:      {skipped}")
+        print(f"  Vectors indexed:    {stats.vec_indexed}  [{embedding.MODEL_NAME}, {embedding.EMBED_DIM}-dim]")
+        print(f"    embedded {stats.vec_embedded} new, reused {stats.vec_reused}, "
+              f"pruned {stats.vec_pruned} stale")
+    if stats.skipped:
+        print(f"  Files skipped:      {stats.skipped}")
     # Errors print whenever present — the vector-lane error has no skipped file
     # attached, and gating this on `skipped` once hid a broken embedder entirely.
-    for path, err in errors:
+    for path, err in stats.errors:
         print(f"    {path}: {err}")
     print()
-    print(f"  Runtime:            {elapsed:.3f}s")
+    # Phases do not sum to Runtime — cfg load, the commit and the summary itself
+    # sit outside them. They are for comparing like with like across builds, not
+    # for accounting for every millisecond.
+    print(f"  Runtime:            {elapsed:.3f}s"
+          f"  (walk {walk_s:.2f} / dir-index {dir_index_s:.2f} / "
+          f"fts {stats.fts_s:.2f} / embed {stats.embed_s:.2f})")
     print("=" * 50)
+
+    # --- Build history ---
+    # Facts, not labels: "was it cold" is derivable from db_existed_at_start or
+    # from (reused == 0 and embedded == indexed), and a later change of
+    # definition can then be applied retroactively to rows already written.
+    # Recorded last so it reflects the finished build, which does mean a build
+    # that crashes outright logs nothing at all.
+    _log_build({
+        "schema":              HISTORY_SCHEMA,
+        "timestamp":           now_local.isoformat(timespec="seconds"),
+        "runtime_s":           round(elapsed, 3),
+        "walk_s":              round(walk_s, 3),
+        "dir_index_s":         round(dir_index_s, 3),
+        "fts_s":               round(stats.fts_s, 3),
+        "embed_s":             round(stats.embed_s, 3),
+        "files_indexed":       stats.indexed,
+        "files_in_tree":       file_count,
+        "dirs_walked":         dir_count,
+        "content_bytes":       stats.content_bytes,
+        "files_skipped":       stats.skipped,
+        "embedded_new":        stats.vec_embedded,
+        "reused":              stats.vec_reused,
+        "pruned":              stats.vec_pruned,
+        "vectors_indexed":     stats.vec_indexed,
+        "db_existed_at_start": db_existed_at_start,
+        "vector_lane_available": embedding.AVAILABLE,
+        "no_vectors_flag":     args.no_vectors,
+        "embed_model":         embedding.MODEL_NAME if embedding.AVAILABLE else None,
+        "embed_dim":           embedding.EMBED_DIM if embedding.AVAILABLE else None,
+        "invocation":          _detect_invocation(),
+        "console_only":        args.console,
+        "error_count":         len(stats.errors),
+        "vector_failed":       vec_failed,
+    })
 
     if args.check_schemas:
         _run_schema_check()

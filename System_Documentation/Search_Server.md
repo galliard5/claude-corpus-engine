@@ -194,6 +194,12 @@ index_status() -> str
 
 Returns the DB path, total file count, **vector-lane status** (vector count + model, or "not built"), and last-built timestamp. Use to verify freshness — and whether semantic/hybrid search is available — before relying on results.
 
+**Build cost, when a history exists.** If `Python/build_history.jsonl` is present (written by `build_indexes.py` — see *Indexer*), two more lines report the last build's runtime, whether it was cold or reused cached embeddings, the FTS/embed phase split, which path invoked it, and the median and range across recent builds. This is the one place a chat session can see whether rebuilds are getting slower.
+
+The read is tail-bounded and fail-soft: a missing, unreadable or corrupt log drops those lines and changes nothing else. It is also the only file this server reads outside the index database, at a fixed path, reachable from no tool argument.
+
+**The label matters.** A record whose timestamp does not match the database's mtime is reported as **last logged build**, with a note, rather than *last build*. The two legitimately diverge — a `--console` run logs without writing the DB, a build against a different cfg writes elsewhere, and an index built before the log existed has no record at all. Labelling those "last build" would recreate exactly the confident-but-wrong number the log was added to prevent.
+
 ## Result format
 
 Each result includes:

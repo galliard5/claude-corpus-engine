@@ -263,7 +263,7 @@ A custom MCP server (`Python/search_mcp_server.py`) exposes ranked search over t
 
 - **`corpus-search:search_corpus(query, limit=10, mode="fts", category_filter=None, type_filter=None, missing_filter=None, show_sections=True)`** — ranked search across name, keywords, description, category, and content. Returns ranked paths with snippets showing matched context. Higher scores = better matches. `mode` picks the retrieval lane (see below); the three filters compose with AND. `limit` (default 10) is capped at 200 — a larger value returns a diagnostic error, not results (a runaway-call backstop you'll never hit in normal use). `show_sections` adds the `Sections:` line described below. (Full filter docs: `System_Documentation/Search_Server.md`.)
 - **`corpus-search:get_section(path, heading=None, level=2)`** — returns one `##` section of an indexed document instead of the whole file. Omit `heading` to list a document's sections and their sizes first. Heading matching is forgiving: case, spacing, and dash style are normalized, and a unique prefix or substring is enough.
-- **`corpus-search:index_status()`** — Returns file count, vector-lane availability, and last-built timestamp. Use to check freshness before relying on results.
+- **`corpus-search:index_status()`** — Returns file count, vector-lane availability, and last-built timestamp, plus what the last build cost (runtime, cold or cache-warm, recent median). Use to check freshness before relying on results, and to know whether a rebuild is cheap before asking for one.
 
 **Reading one section instead of a whole file.** Hits on documents over ~3k tokens carry a `Sections:` line listing each `##` section and its rough token cost:
 

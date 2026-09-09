@@ -13,8 +13,9 @@ Three retrieval modes (the `mode` arg):
     "hybrid"  fuses fts + vector with Reciprocal Rank Fusion
 
 The database path is hardcoded and opened read-only. The server has no SQL
-passthrough and touches no files — everything reachable through this interface
-comes out of the pre-built index tables. get_section takes a `path`, but it is
+passthrough, and the only file it reads outside the index database is
+build_history.jsonl, at a fixed path, for index_status alone — nothing
+reachable through a tool argument addresses the filesystem. get_section takes a `path`, but it is
 an index key, not a filesystem path: it is matched for equality against
 corpus_fts.path and the body is served from the stored `content` column, so
 nothing outside the index is addressable and no traversal is possible.
@@ -33,6 +34,14 @@ changed 2026-09-04: genericized docstring query examples and the FTS5 error hint
     for the public repo split (setting-specific names removed); category_filter
     now documents what a path segment is rather than naming two of them.
     Docstrings only — no behaviour change.
+changed 2026-09-08: index_status now reports the last build's cost from
+    Python/build_history.jsonl — runtime, cold/warm, fts vs embed split, and a
+    median over recent builds. Read-only, tail-bounded, and fail-soft: a missing
+    or corrupt log drops the extra lines and changes nothing else. The log line
+    is labelled "last logged build" rather than "last build" when its timestamp
+    does not match the DB's, so a stale or unrelated record cannot pass itself
+    off as this index's provenance.
+
 changed 2026-09-05: added section-level retrieval. search_corpus results now
     carry a `Sections:` manifest for documents large enough to be worth
     splitting, and the new get_section tool returns a single section. Both are
@@ -42,9 +51,11 @@ changed 2026-09-05: added section-level retrieval. search_corpus results now
 """
 
 import datetime
+import json
 import os
 import re
 import sqlite3
+import statistics
 import time
 from pathlib import Path
 
@@ -59,6 +70,25 @@ import embedding
 # DB_PATH must stay in lockstep with build_indexes.py and indexer.cfg index_directory.
 _CORPUS_ROOT = Path(os.environ.get("CORPUS_ROOT", r"D:\claude\filesystem"))
 DB_PATH = _CORPUS_ROOT / "index" / "search_index.db"
+
+# Per-build telemetry written by build_indexes.py. Deliberately outside index/,
+# so it survives the index being deleted. Read-only here, and only by
+# index_status — a fixed path, never derived from any tool argument.
+# The builder resolves this path from its own __file__; this end resolves it
+# from CORPUS_ROOT. The two agree in both deployments (host and the /corpus
+# mount) because the layout is fixed — same lockstep obligation as DB_PATH.
+HISTORY_PATH = _CORPUS_ROOT / "Python" / "build_history.jsonl"
+# The log is append-only and one record is a few hundred bytes; reading the
+# tail bounds the work regardless of how long the history gets.
+_HISTORY_TAIL_BYTES = 64 * 1024
+# How many recent builds the median is taken over, after filtering to a single
+# invocation path. _HISTORY_READ_N is the wider window read before filtering.
+_HISTORY_RECENT_N = 10
+_HISTORY_READ_N   = 50
+# A logged build is treated as the one that produced the current DB only if the
+# two timestamps are close. Wider than any plausible clock skew, far narrower
+# than "someone rebuilt yesterday".
+_HISTORY_MATCH_TOLERANCE_S = 300
 
 # bm25 column weights for corpus_fts: (path, name, keywords, description, category, content).
 # path is UNINDEXED (weight ignored); name/keywords/description are boosted over body.
@@ -844,6 +874,125 @@ def get_section(path: str, heading: str | None = None, level: int = 2) -> str:
     )
 
 
+def _read_build_history(limit: int = _HISTORY_RECENT_N) -> list[dict]:
+    """Return up to `limit` most recent build records, newest last.
+
+    Reads only the tail of the file, so cost is constant no matter how long the
+    history grows. Returns [] for every failure mode — no file (the log postdates
+    this index, or the corpus predates the log), unreadable, or garbage lines.
+    A missing history is a normal state, not an error: index_status must still
+    answer without it.
+    """
+    try:
+        size = HISTORY_PATH.stat().st_size
+        with HISTORY_PATH.open("rb") as fh:
+            if size > _HISTORY_TAIL_BYTES:
+                fh.seek(size - _HISTORY_TAIL_BYTES)
+                fh.readline()          # discard the partial line seek landed in
+            raw = fh.read().decode("utf-8", errors="replace")
+    except Exception:
+        return []
+
+    records = []
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except ValueError:
+            continue               # a sheared or hand-edited line skips, silently
+        if isinstance(obj, dict):
+            records.append(obj)
+    return records[-limit:]
+
+
+def _describe_build(rec: dict) -> str:
+    """One line describing a logged build: runtime, phase split, cache behaviour.
+
+    "Cold" is derived here rather than read from the log, which stores only the
+    raw signals — so this definition can be changed without invalidating rows
+    already written.
+    """
+    runtime = rec.get("runtime_s")
+    parts = [f"{runtime:.1f}s" if isinstance(runtime, (int, float)) else "unknown duration"]
+
+    embedded, reused = rec.get("embedded_new"), rec.get("reused")
+    if not rec.get("vector_lane_available") or rec.get("no_vectors_flag"):
+        parts.append("no vector lane")
+    elif isinstance(embedded, int) and isinstance(reused, int):
+        cold = reused == 0 and embedded == rec.get("files_indexed")
+        parts.append(
+            "cold — every document re-embedded" if cold
+            else f"warm — {embedded} embedded, {reused} reused from cache"
+        )
+
+    # The split is only informative when both phases actually ran; on a
+    # --no-vectors build "embed 0.0s" is noise dressed up as a measurement.
+    embed_s, fts_s = rec.get("embed_s"), rec.get("fts_s")
+    if isinstance(fts_s, (int, float)) and isinstance(embed_s, (int, float)) and embed_s > 0:
+        parts.append(f"fts {fts_s:.1f}s / embed {embed_s:.1f}s")
+    elif isinstance(fts_s, (int, float)):
+        parts.append(f"fts {fts_s:.1f}s")
+
+    invocation = rec.get("invocation")
+    if invocation:
+        parts.append(f"via {invocation}")
+    if rec.get("vector_failed"):
+        parts.append("[!] vector lane FAILED")
+    return ", ".join(parts)
+
+
+def _history_lines(db_mtime: datetime.datetime) -> list[str]:
+    """Build-history lines for index_status, or [] when there is no usable log."""
+    records = _read_build_history(_HISTORY_READ_N)
+    if not records:
+        return []
+
+    last = records[-1]
+    lines = []
+
+    # Only claim the last logged build produced this DB when the timestamps
+    # agree. They can diverge legitimately — a --console run logs without
+    # writing the DB, and a build against a different cfg writes a different DB
+    # into the same log. Saying "last build" in those cases would reintroduce
+    # exactly the confident-but-wrong number this log exists to prevent.
+    matches_db = False
+    try:
+        logged = datetime.datetime.fromisoformat(last["timestamp"])
+        if logged.tzinfo is not None:
+            logged = logged.astimezone().replace(tzinfo=None)
+        delta = abs((logged - db_mtime).total_seconds())
+        matches_db = delta <= _HISTORY_MATCH_TOLERANCE_S
+    except Exception:
+        pass
+
+    # Value column 18 matches the lines above it ("  Files indexed:  ", etc.);
+    # the longer stale label overruns it rather than shifting the whole block.
+    label = "  Last build:" if matches_db else "  Last logged build:"
+    lines.append(f"{label.ljust(17)} {_describe_build(last)}")
+    if not matches_db:
+        lines.append(" " * 18 + "(does not match this index's timestamp — the "
+                     "current index was built before the log existed, or by a "
+                     "run that did not write this DB)")
+
+    # Compare like with like. A host build reads the corpus off local disk; a
+    # container build reads it across a bind mount, and the two differ by an
+    # order of magnitude on the same corpus. Pooling them produces a median that
+    # describes neither — so the trend is reported for the last build's own
+    # invocation path, and says which one it is.
+    invocation = last.get("invocation")
+    runtimes = [r["runtime_s"] for r in records
+                if isinstance(r.get("runtime_s"), (int, float))
+                and r.get("invocation") == invocation][-_HISTORY_RECENT_N:]
+    if len(runtimes) >= 3:
+        via = f" via {invocation}" if invocation else ""
+        lines.append(f"{'  Recent builds:'.ljust(17)} {len(runtimes)}{via}, "
+                     f"{statistics.median(runtimes):.1f}s median, "
+                     f"{min(runtimes):.1f}–{max(runtimes):.1f}s range")
+    return lines
+
+
 @mcp.tool()
 def index_status() -> str:
     """Report the current state of the search index.
@@ -851,6 +1000,12 @@ def index_status() -> str:
     Returns the database path, total indexed files, vector-lane availability,
     and last-built timestamp. Useful for checking whether the index is stale or
     whether semantic search is available before relying on results.
+
+    When build_indexes.py has logged builds, also reports what the last one
+    actually cost — runtime, whether it was cold or reused cached embeddings,
+    the FTS/embed split — plus the median over recent builds, so "is the index
+    healthy" and "is it getting slower" are answered with evidence rather than a
+    bare timestamp. Absent or unreadable history is silently omitted.
     """
     if not DB_PATH.exists():
         rebuild_path = DB_PATH.parent / "build_indexes.py"
@@ -894,13 +1049,15 @@ def index_status() -> str:
     else:
         vec_line = f"  Vector lane:    {vec_count} vectors [{embedding.MODEL_NAME}]"
 
-    return (
-        "Search index status:\n"
-        f"  Path: {DB_PATH}\n"
-        f"  Files indexed:  {count}\n"
-        f"{vec_line}\n"
-        f"  Last built:     {mtime.strftime('%Y-%m-%d %H:%M:%S')} ({age_str})"
-    )
+    lines = [
+        "Search index status:",
+        f"  Path: {DB_PATH}",
+        f"  Files indexed:  {count}",
+        vec_line,
+        f"  Last built:     {mtime.strftime('%Y-%m-%d %H:%M:%S')} ({age_str})",
+    ]
+    lines.extend(_history_lines(mtime))
+    return "\n".join(lines)
 
 
 if __name__ == "__main__":

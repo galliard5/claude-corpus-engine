@@ -85,6 +85,47 @@ edit that file, then start Desktop. Add to it (or to your client's equivalent):
   is the archive copy. A failed capture writes nothing; if capture succeeds but the cleaner fails,
   the raw archive is intact and the transcript can be rebuilt without recapturing.
 
+- **The indexer now logs every build to `Python/build_history.jsonl`**, and
+  `corpus-search:index_status` reports what the last build cost — runtime, whether it was cold or
+  reused cached embeddings, the FTS/embed split, and the median and range across recent builds on
+  the same invocation path.
+
+  Every performance figure in these docs has been a hand-measured snapshot with no mechanism for
+  noticing when it stops being true. The cold-build number said `~40s for ~500 docs` until a
+  from-scratch rebuild was run by hand and came back at about a minute; nobody knew in between, and
+  the corrected numbers would have rotted the same way. A running log turns the next correction from
+  a re-measurement into a query, and answers what a single measurement structurally cannot: whether
+  a build is slower because the corpus grew or because something regressed. It also accumulates the
+  evidence behind the *"not profiled for >10× scale"* caveat in `System_Documentation/Indexer.md`.
+
+  The log records raw signals rather than conclusions — there is deliberately no `cold: true` field,
+  because that is the definition most likely to drift. `index_status` derives "cold" from
+  `reused == 0 and embedded_new == files_indexed`, so changing that definition later re-classifies
+  rows already written instead of invalidating them.
+
+  Nothing to do: the file is created on the next build, is gitignored as machine-specific
+  operational data, and grows by a few hundred bytes per build. Writing it can never fail a build —
+  every error is swallowed after a one-line notice, because a logging fault that made
+  `refresh_indexes.bat` report failure over a good index would be strictly worse than no log.
+
+  It lives beside the builder rather than in `index/` on purpose: the log's whole value is
+  outliving the index. That also puts it inside the corpus mount, and `index-tools` mounts
+  `/corpus` read-write, so rebuilds triggered from chat append to the same history the host `.bat`
+  writes instead of splitting it in two.
+
+### Changed
+
+- **The build summary now prints a phase split** — `walk / dir-index / fts / embed` — beside the
+  total runtime. Previously a single `perf_counter` pair covered the whole run, so a slow build gave
+  no clue which part was slow. The phases do not sum to the total; they exist for comparing like
+  with like across builds, not for accounting for every millisecond.
+
+  The first thing the log showed is worth knowing: on the same corpus and the same warm cache, a
+  rebuild through `index-tools` takes an order of magnitude longer than the same build run on the
+  host, essentially all of it in the file-reading phase — the bind mount, not the indexer. That is
+  why the trend line in `index_status` is scoped to a single invocation path; a median pooled across
+  both describes neither.
+
 ---
 
 ## 2026-09-07

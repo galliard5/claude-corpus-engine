@@ -20,6 +20,10 @@ subprocess waiting for a keypress. The bat remains available for human use
 Launched by Claude Desktop as a stdio subprocess via claude_desktop_config.json.
 Not intended to be run manually.
 
+changed 2026-09-08: the builder subprocess now inherits CORPUS_BUILD_INVOCATION
+    ="container", so build_history.jsonl can tell rebuilds triggered from chat
+    apart from refresh_indexes.bat runs. No behaviour change to the rebuild.
+
 changed 2026-07-03: rebuild_indexes docstring corrected — FTS index lives at
     index/search_index.db, not Python/search_index.db; noted the vector lane
     rebuilds in the same pass when embedding deps are present.
@@ -187,6 +191,12 @@ def rebuild_indexes(load: str | None = None) -> str:
             timeout=_BUILD_TIMEOUT_S,
             cwd=str(PYTHON_DIR),
             stdin=subprocess.DEVNULL,
+            # Tells the builder's history log which path invoked it, so
+            # container rebuilds are distinguishable from refresh_indexes.bat
+            # runs in one shared log. The log itself is written by the builder
+            # and only by the builder — instrumenting here as well would
+            # double-count container builds and miss host builds entirely.
+            env={**os.environ, "CORPUS_BUILD_INVOCATION": "container"},
         )
     except subprocess.TimeoutExpired:
         return (

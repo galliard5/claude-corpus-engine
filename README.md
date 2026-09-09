@@ -112,10 +112,22 @@ A few decisions that aren't obvious from the code:
 - **Two SQLite tables, not one.** FTS5's tokenizer splits on hyphens, so `setting-document` is
   unsearchable as a typed value. A companion table holds structured fields for SQL equality.
 - **Rebuilds are wholesale, embeddings are incremental.** The directory trees and FTS tables are
-  dropped and rebuilt every run — sub-second, so incremental complexity isn't worth it. The
+  dropped and rebuilt every run — fast enough that incremental complexity isn't worth it. The
   embedding pass is the exception: it is ~99% of a *cold* build, so vectors are cached by content
-  hash. In practice a routine refresh is well under a second and a from-scratch build is about a
-  minute. See `System_Documentation/Indexer.md` → *Performance*.
+  hash. A routine refresh on the host is well under a second; a from-scratch build is about a
+  minute. A rebuild triggered from chat runs the same code across the Docker bind mount and costs
+  roughly an order of magnitude more, nearly all of it in file reads. See
+  `System_Documentation/Indexer.md` → *Performance*, and check your own numbers rather than these
+  — which is what the next note is about.
+- **Build cost is logged, not asserted.** Every performance figure in a README is a hand-measured
+  snapshot with no mechanism for noticing when it stops being true. This file claimed a flat
+  "sub-second" rebuild until someone happened to run a from-scratch build and it came back at a
+  minute. So the indexer appends a record of each build to `Python/build_history.jsonl`, and
+  `index_status` reports what the last build actually cost — turning the next correction from a
+  re-measurement into a query, and separating "the corpus grew" from "something regressed".
+  It logs raw signals rather than conclusions: there is no `cold: true` field, because that is the
+  definition most likely to drift. The reader derives it, so changing the definition later
+  re-classifies old records instead of invalidating them.
 - **Retrieval is not salience.** Opening a file during prep doesn't make its contents part of the
   scene. `core_rules.md` covers why this distinction matters when a model has search available.
 - **Transcripts are captured, not recalled.** A model asked to reproduce a session from context

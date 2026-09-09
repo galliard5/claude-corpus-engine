@@ -272,7 +272,9 @@ params:
 ### `corpus-search:index_status`
 Returns the database path, total indexed file count, vector-lane availability, and last-built timestamp. No params.
 
-**Use case:** Before relying on a search result for time-sensitive work, confirm the index is fresh. If `index_status` shows the build is older than a recent corpus change, prompt the user to refresh.
+When the builder has logged builds, two further lines report what the last build actually cost — runtime, whether it was cold or reused cached embeddings, the FTS/embed split, which path invoked it — and the median and range over recent builds. A build labelled **last logged build** rather than *last build* did not produce the index you are querying; treat its numbers as background, not provenance.
+
+**Use case:** Before relying on a search result for time-sensitive work, confirm the index is fresh. If `index_status` shows the build is older than a recent corpus change, prompt the user to refresh. The cost lines answer a different question — whether a rebuild is a sub-second reindex or a full re-embed — before you ask for one.
 
 ## Index Tools (1)
 

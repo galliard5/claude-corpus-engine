@@ -170,13 +170,36 @@ Single entry point. Flow:
    - Drop and recreate `corpus_fts` (FTS5 virtual table) and `corpus_meta` (regular table). When the embedding deps are present, also drop any stale `corpus_vec` and recreate it (unless `--no-vectors`).
    - For each search-eligible file: parse YAML frontmatter, compute the `category` from path parts, populate `corpus_fts`/`corpus_meta` in a parameterized INSERT, and (if building vectors) stash `(rowid, content_hash, embed_text)`.
    - After the FTS inserts, build `corpus_vec` by shared rowid — reusing cached embeddings for unchanged content (`embed_cache`, keyed by `content_hash`) and running the model only on new/changed docs. Stale cache entries are pruned each build. An embedding failure warns and leaves the FTS index intact.
-9. Print summary (including vectors indexed) and (unless `--no-pause`) wait for Enter.
+9. Print summary (including vectors indexed and the phase split) and append one record to the build history (see below).
+10. Unless `--no-pause`, wait for Enter.
 
 The vector pass is **optional and gated on `embedding.AVAILABLE`** (`Python/embedding.py`). Where `fastembed`/`sqlite-vec` aren't installed — e.g. a Docker image not yet rebuilt — it's skipped silently and only the FTS index is produced. The `embed_cache` carries a one-row identity stamp (model + dim); a model or dimension change auto-invalidates the whole cache so vectors of the wrong shape are never reused. See `Search_Server.md` for the `corpus_vec` and `embed_cache` schema.
 
 **Pruning logic:** `walk_and_collect` mutates `dirnames` in-place inside `os.walk`, which `os.walk` honors. That means excluded subtrees are never descended — the script doesn't waste time walking through `Trash/` to filter its files out later.
 
-**Performance:** The FTS-only rebuild takes well under a second on the current corpus. The embedding pass dominates a **cold** build — roughly a minute for ~580 docs on CPU (bge-small), almost all of it the batched encode. With the `embed_cache` warm it only re-embeds changed files, so a rebuild after editing a handful of files is back to ~0.6 seconds, and an unchanged-corpus rebuild runs zero model calls. (Measured 2026-09-07 at 583 indexed files: warm rebuild 0.637s, `embedded 0 new, reused 581`. Cold-build figures scale with corpus size — treat both numbers as an order of magnitude, not a benchmark.) The build summary reports `embedded N new, reused M, pruned K stale` so the split is visible. Use `--no-vectors` for a guaranteed FTS-only refresh. Cold-cache builds still happen on the first run after a model/dim change (cache auto-invalidated) or a fresh DB. Not profiled for >10× scale; the obvious wins are parallel file reads and (for cold builds) GPU batching.
+**Performance:** These figures are hand-measured snapshots, which is why the build history below exists — check `build_history.jsonl` or `index_status` for what builds on this machine actually cost now. The FTS-only rebuild takes well under a second on the current corpus. The embedding pass dominates a **cold** build — roughly a minute for ~580 docs on CPU (bge-small), almost all of it the batched encode. With the `embed_cache` warm it only re-embeds changed files, so a rebuild after editing a handful of files is back to ~0.6 seconds, and an unchanged-corpus rebuild runs zero model calls. (Measured 2026-09-07 at 583 indexed files: warm rebuild 0.637s, `embedded 0 new, reused 581`. Cold-build figures scale with corpus size — treat both numbers as an order of magnitude, not a benchmark.) The build summary reports `embedded N new, reused M, pruned K stale` so the split is visible. Use `--no-vectors` for a guaranteed FTS-only refresh. Cold-cache builds still happen on the first run after a model/dim change (cache auto-invalidated) or a fresh DB. Not profiled for >10× scale; the obvious wins are parallel file reads and (for cold builds) GPU batching.
+
+### Build history — `Python/build_history.jsonl`
+
+Every build appends one JSON object to `Python/build_history.jsonl`. Gitignored: machine-specific operational data that would conflict on every pull.
+
+**Why not in `index/`.** The log's purpose is to outlive the index, and `index_directory` is both gitignored and configurable to an absolute path anywhere — so the path is fixed relative to the builder instead. That also places it inside the corpus mount, and `index-tools` mounts `/corpus` read-write (unlike the two read-only search servers), so a rebuild triggered from chat appends to the same file `refresh_indexes.bat` writes rather than splitting the history in two. If that mount ever gains `:ro`, container builds stop logging.
+
+**Why JSONL.** Appending never rewrites history, so an interrupted write cannot corrupt earlier records — which a parse-modify-rewrite format (a JSON array, YAML) can, and history is the file's entire value. New fields don't invalidate old rows; the `schema` integer on every line says what to expect.
+
+**It logs facts, not labels.** There is deliberately no `cold: true` field. "Cold" is the definition most likely to drift — fresh DB? cleared cache? model change? — so the raw signals are stored (`db_existed_at_start`, `embedded_new`, `reused`, `files_indexed`) and the classification is left to the reader. `index_status` currently derives cold as `reused == 0 and embedded_new == files_indexed`; changing that definition later re-classifies old rows for free.
+
+Per-record fields: `schema`, `timestamp`, `runtime_s`, the phase split (`walk_s`, `dir_index_s`, `fts_s`, `embed_s`), `files_indexed`, `files_in_tree`, `dirs_walked`, `content_bytes` (body text actually indexed, post-truncation — a better predictor of embed cost than file count), `files_skipped`, `embedded_new`, `reused`, `pruned`, `vectors_indexed`, `db_existed_at_start`, `vector_lane_available`, `no_vectors_flag`, `embed_model`, `embed_dim`, `invocation`, `console_only`, `error_count`, `vector_failed`.
+
+**Guarantees and limits.**
+
+- **Telemetry never fails the build.** The write is wrapped and every error swallowed after a one-line notice. A logging fault that made `refresh_indexes.bat` report failure over a good index would be strictly worse than no log.
+- **One write site.** Both the bat and `index-tools:rebuild_indexes` shell out to this script, so instrumenting the builder covers every path. `index_tools_mcp_server.py` passes `CORPUS_BUILD_INVOCATION=container` so the two are distinguishable, but it writes nothing itself — instrumenting there too would double-count container builds and miss host builds entirely.
+- **One `write()` of one complete line, in append mode**, so the bat double-clicked while chat calls `rebuild_indexes` interleaves whole records instead of shearing one in half.
+- **A build that crashes outright logs nothing.** The record is written after the summary, which is also what keeps it from being able to fail the build. `error_count` and `vector_failed` cover partial failures; a hard crash leaves no row.
+- **Phases don't sum to `runtime_s`.** Cfg load, the commit, and the summary sit outside them. They are for comparing like with like across builds, not for accounting for every millisecond.
+- **Growth is a non-issue** — ~300 bytes per build is well under 100 KB/year. No rotation; a 5 MB warning exists only so a runaway loop announces itself.
+- The file appears in `directory_index_with_files.md` beside the builder that writes it. One line, in a directory chat already sees, next to the script it belongs to.
 
 **Invocation:**
 ```cmd

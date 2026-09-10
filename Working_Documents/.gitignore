@@ -1,0 +1,18 @@
+# Working_Documents — local repository
+#
+# This file belongs to the local repository that lives in this directory, not to the engine
+# repository above it. See README.md for what that repository is for and how to create one.
+
+# The three files the engine repository owns and ships.
+#
+# README.md documents the convention; this file and .gitattributes make it work on a fresh
+# clone. All three are tracked upstream, so tracking them here as well would put one file
+# under two histories with no way to tell which is authoritative. Edit them, and commit them
+# from the engine repository.
+#
+# Everything else in this directory belongs to the local repository. That is the whole
+# division: the engine repo owns the scaffolding that defines the convention, the local repo
+# owns the documents it holds.
+README.md
+.gitignore
+.gitattributes

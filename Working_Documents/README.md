@@ -7,8 +7,8 @@ description: Holding directory for handoffs, proposals, and planning documents �
 
 # Working_Documents
 
-**Handoffs, proposals, and planning documents go here. Nothing in this directory ships in the
-public engine repository.**
+**Handoffs, proposals, and planning documents go here. None of them ship in the public engine
+repository.**
 
 ## Why the directory exists
 
@@ -52,22 +52,68 @@ working copy is retired. The document is scaffolding, not the building.
 
 ## Tracking
 
-The engine repository ships this directory and this README, and nothing else in it:
+The engine repository ships this directory and three files in it — this README, plus the
+`.gitignore` and `.gitattributes` that the local repository below needs — and nothing else:
 
 ```
 /Working_Documents/*
 !/Working_Documents/README.md
+!/Working_Documents/.gitignore
+!/Working_Documents/.gitattributes
 ```
 
-Two details in that rule are load-bearing. The pattern is `*`, not `*.*` — the latter matches
+Three details in that rule are load-bearing. The pattern is `*`, not `*.*` — the latter matches
 only names containing a dot, so a subdirectory like `Working_Documents/archive/` would not match,
-git would descend into it, and its contents would ship. And the case must match exactly: a
-lowercase `!working_documents/readme.md` appears to work on Windows, where `core.ignorecase` is
-usually true, then inverts on a case-sensitive filesystem — the README gets ignored while
-everything else ships.
+git would descend into it, and its contents would ship. Gitignore's `*` *does* match a leading
+dot, unlike shell globbing, so the two dotfiles need explicit negations or they disappear along
+with everything else. And the case must match exactly: a lowercase
+`!working_documents/readme.md` appears to work on Windows, where `core.ignorecase` is usually
+true, then inverts on a case-sensitive filesystem — the README gets ignored while everything else
+ships.
 
-The consequence is that working documents are **tracked by neither post-split repository** — the
-engine repo ignores them, and the content repo is rooted at `World_Building/`. That is
-deliberate. If a working document is valuable enough to want history for, that is a signal to
-promote its durable content into `System_Documentation/`, not a reason to version the
-scaffolding.
+## Local history
+
+Because the engine repository ignores these documents, they have no history there. That is right
+for publication and wrong for the documents themselves: a handoff can be rewritten or deleted
+with no record of what it previously said, which is a poor property for the files that carry
+unfinished decisions between working sessions.
+
+**This directory is therefore meant to be its own local git repository.** From inside it:
+
+```
+git init -b main
+```
+
+That is the whole step. On a fresh clone there is nothing to commit yet — the three files
+present are the parent's and are ignored here — so the first commit arrives with the first
+document you write.
+
+The two dotfiles that shipped with the clone do the rest. `.gitignore` excludes the three
+parent-owned files, so they stay under one history rather than two; `.gitattributes` restores
+the line-ending normalization, which does not otherwise apply, since a nested repository is its
+own attribute scope.
+
+That is the whole division of ownership: **the engine repository owns the scaffolding that
+defines the convention; the local repository owns the documents it holds.** Adding a file here
+means deciding which of the two it is.
+
+**Give it no remote.** The reasoning that keeps these documents out of the public repository is
+unchanged — they name unfinished decisions, quote paths that are about to move, and record
+conclusions that later turned out to be wrong. What was missing was never publication, only the
+ability to see what changed. A private mirror for backup is a different question from publishing,
+and the answer to it may reasonably be yes; a local repository gives you history but not a
+backup, since it sits on the same disk as the thing it is protecting.
+
+Be accurate about what the nesting does. The parent's traversal stops at the repository
+boundary, so `git add .`, `git add -A`, and a `Working_Documents/` directory pathspec cannot
+pull anything in. An explicit `git add -f <path>` still reaches through. It is a second
+independent barrier, not an absolute one, and the ignore rule above remains the thing doing the
+real work.
+
+The step is optional. Skip it and the directory behaves exactly as it did before — untracked
+by anything, which was the arrangement until this convention existed.
+
+None of this displaces the lifecycle rule above. Local history makes a working document
+recoverable; it does not make it durable. If something here is valuable enough to keep, promote
+it into `System_Documentation/` — versioning the scaffolding is not a substitute for extracting
+the building.

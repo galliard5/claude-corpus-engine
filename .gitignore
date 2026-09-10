@@ -64,15 +64,27 @@ desktop.ini
 /Core_Rules/Templates/template.ai-story.json
 
 # --- Working documents: handoffs, proposals, plans. Contents never published. ---
-# Ships the directory and its README, nothing else — same shape as World_Building.
-# A directory rule rather than per-file entries, deliberately: a new handoff
-# written here is excluded by default. The per-file version failed open — anything
-# nobody remembered to list shipped.
+# Ships the directory and its scaffolding, never its contents — same shape as
+# World_Building. A directory rule rather than per-file entries, deliberately: a new
+# handoff written here is excluded by default. The per-file version failed open —
+# anything nobody remembered to list shipped.
 #
 # Use bare `*`, not `*.*`: `*.*` matches only names containing a dot, so a
 # subdirectory such as Working_Documents/archive/ would not match, git would
 # descend into it, and its contents would ship. Match the case exactly too — a
 # lowercase negation appears to work where core.ignorecase is true, then inverts
 # on a case-sensitive filesystem, hiding the README and publishing everything else.
+#
+# Three files are negated rather than one. README.md documents the convention; the
+# other two make it work on a fresh clone, so that adopting it is `git init` and
+# nothing else. Note that gitignore `*` matches leading dots — unlike shell globbing
+# — so the dotfiles need explicit negations or they vanish with everything else.
+#
+# These three are the parent's, and the local repository inside this directory
+# ignores all three in turn. That split is the whole convention: the engine repo owns
+# the scaffolding that defines it, the local repo owns the documents it holds. Adding
+# a file here means deciding which of those two it is.
 /Working_Documents/*
 !/Working_Documents/README.md
+!/Working_Documents/.gitignore
+!/Working_Documents/.gitattributes

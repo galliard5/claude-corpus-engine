@@ -35,6 +35,34 @@ while it stays rare.
 
 ---
 
+## 2026-09-09
+
+### Added
+
+- **`Working_Documents/` is now meant to hold its own local git repository**, and ships the
+  `.gitignore` and `.gitattributes` it needs so that adopting the convention is `git init` and
+  nothing else. No action is required — skip it and the directory behaves exactly as before.
+
+  The directory's contents are excluded from this repository on purpose and that has not changed:
+  handoffs and proposals name unfinished decisions, quote paths that are about to move, and record
+  conclusions that later turned out to be wrong. But the consequence was that they had no history
+  anywhere, so a handoff could be rewritten or deleted with no record of what it previously said —
+  a poor property for the documents that carry unfinished work between sessions. What was missing
+  was never publication, only the ability to see what changed.
+
+  Ownership splits along the same line the directory already had: this repository owns the
+  scaffolding that defines the convention — `README.md` and the two dotfiles — and the local
+  repository owns the documents it holds. Each ignores the other's files, so nothing sits under
+  two histories.
+
+  Two mechanical notes, both of which cost a debugging session if you meet them by surprise.
+  Gitignore's `*` matches a leading dot, unlike shell globbing, so the dotfiles need explicit
+  negations. And a nested repository is its own attribute scope: the parent's line-ending
+  normalization does not reach across the boundary, which is why `.gitattributes` is duplicated
+  rather than inherited.
+
+---
+
 ## 2026-09-08
 
 **Action required:** register the new server and restart your MCP client. **Quit the client first,

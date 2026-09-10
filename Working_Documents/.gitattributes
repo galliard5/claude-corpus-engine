@@ -1,0 +1,7 @@
+# Normalize line endings: store LF in the repo, check out LF on all platforms.
+# Silences the "LF will be replaced by CRLF" warnings under core.autocrlf=true.
+#
+# The engine repository one directory up carries an identical rule, but a nested repository
+# is its own attribute scope — the parent's .gitattributes does not reach across the
+# boundary, so without this copy every file here would churn on checkout.
+* text=auto eol=lf

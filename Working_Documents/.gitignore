@@ -1,7 +1,7 @@
 # Working_Documents — local repository
 #
-# This file belongs to the local repository that lives in this directory, not to the engine
-# repository above it. See README.md for what that repository is for and how to create one.
+# This file is owned and tracked by the engine repository above this directory. The local
+# repository ignores it. See README.md for the ownership split and setup instructions.
 
 # The three files the engine repository owns and ships.
 #

@@ -59,7 +59,7 @@ Sections worth having, and what each is for:
 | `SEMANTIC FILE PLACEMENT` | The decision procedure for where a *new* file goes. The highest-value section — it's what stops files landing somewhere plausible but wrong |
 | `SERIES SEARCH BINDING` | Which database `series-search` is pointed at and what it's for. Omit if you don't use that server |
 | `COMMIT MESSAGE EXAMPLES` | Your commit categories and format |
-| `WORLD REGISTER` | Durable cross-setting state you want loaded every session. Keep it small |
+| `PROSE REGISTER` | **Per setting, one entry each.** Its period, its tone, how the fantastic sits inside everyday life, what the prose should and should not reach for. This is what the GM rules mean by a setting's register, and the only place that instruction resolves. Two or three sentences per setting — it governs how the world is written, not what is true in it |
 
 Two conventions carried over from the engine docs, worth matching:
 

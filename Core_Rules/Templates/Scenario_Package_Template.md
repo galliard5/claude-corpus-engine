@@ -27,8 +27,8 @@ description: Template for the operational playbook that pairs with a Scenario fi
 ## Files to Load by Scene
 
 **Opening Scene / Default Load:**
-- Core_Rules/core_rules.md — GM engine: NPC voice rules, consequences, status conditions, pacing, contests
-- Core_Rules/Skill_Trees.md — if the Emergent Skill Tree System is active for this campaign
+- Core_Rules/Start_Here.md — entry point; it names the doctrine, epistemics, presentation and operating-procedure modules and the active system
+- Game_Systems/Baseline/skill_trees.md — if the Emergent Skill Tree System is active for this campaign
 - [[PC_Character_Sheet]]
 - [[Primary_Location]]
 - [[NPC_1]], [[NPC_2]], [[NPC_3]]
@@ -94,7 +94,7 @@ For each major NPC in the scenario, provide an operational profile that the runt
 
 ## Ground Truth
 
-**Purpose:** what actually happened, decided once and independent of anything the PC states, guesses, or does. This is the lookup that `core_rules.md`'s **Hypotheses Are Not Evidence** rule checks any player or NPC theory against — keep it separate from Plot Logic & Branching below, so the runtime GM isn't reconstructing "what's real" from conditional branches mid-scene.
+**Purpose:** what actually happened, decided once and independent of anything the PC states, guesses, or does. This is the lookup that `Core_Rules/epistemics.md`'s **Hypotheses are not evidence** rule checks any player or NPC theory against — keep it separate from Plot Logic & Branching below, so the runtime GM isn't reconstructing "what's real" from conditional branches mid-scene.
 
 For each fact a player could plausibly form a theory about, record:
 

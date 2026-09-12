@@ -80,7 +80,7 @@ Counting tags is subject to the first trap too: the screen-reader copy carries i
 
 Turns are headings because scenes are too coarse: measured on a real session a scene averages ~9,000 tokens — the size `get_section` exists to avoid — while a turn is ~425 median, ~5,300 worst case. Turn numbers are zero-padded because `get_section` matches a heading by unique prefix, and unpadded `Turn 1` is a prefix of `Turn 12`.
 
-Scene headings are never invented. An absent tag is reported, not guessed, because a fabricated witness list would license an NPC to know something nobody saw. See `Core_Rules/core_rules.md` SECTION 6 > *Display* for the GM-side rule and `Core_Rules/Templates/Session_Transcript_Stub.md` for the workflow.
+Scene headings are never invented. An absent tag is reported, not guessed, because a fabricated witness list would license an NPC to know something nobody saw. See `Core_Rules/presentation.md` > *Scene tag* for the rendering contract and `Core_Rules/epistemics.md` > *The witness record* for the rule it serves and `Core_Rules/Templates/Session_Transcript_Stub.md` for the workflow.
 
 ## Where the files go
 

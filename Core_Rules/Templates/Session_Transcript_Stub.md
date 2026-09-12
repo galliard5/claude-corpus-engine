@@ -56,7 +56,7 @@ The link must be *public*. A restricted link redirects to sign-in and the captur
 
 ## Scene headings come from the GM
 
-The GM tags scene changes during play, in the status block beside time and status — see [[core_rules]] SECTION 6 > *Display*:
+The GM tags scene changes during play, in the status block beside time and status — see `Core_Rules/presentation.md` > *The status block*:
 
 ```markdown
 `[ Time: first light ]`
@@ -73,7 +73,7 @@ The cleaner promotes each of those to a real heading in the transcript:
 **This is not decoration.** These headings are the unit the transcript search index is built from, and the names after the dash become its witness column. Two things depend on them:
 
 1. **Chat cannot browse this file.** It has no editor, no scrolling, and no content search outside the corpus index. Without scene-sized rows to retrieve, a transcript is reachable only by loading the whole thing, which is not an option mid-session. The headings are what let chat recover a detail a summary dropped three sessions back.
-2. **Who was present governs what can be said.** A retrieved scene carries its witnesses, so the [[core_rules]] §Information Firewall still applies to recovered material — an NPC absent from that scene learned nothing from it.
+2. **Who was present governs what can be said.** A retrieved scene carries its witnesses, so `Core_Rules/epistemics.md` > *Information Firewall* still applies to recovered material — an NPC absent from that scene learned nothing from it.
 
 The tag is written **forward-looking**: it sits immediately before the choice options and names the scene the player is about to enter, not the one just narrated.
 

@@ -8,7 +8,7 @@ description: Template for the skill block section of a PC character sheet using 
 SKILL TREE BLOCK — TEMPLATE
 ============================
 
-Drop this block into a PC character sheet under a SKILLS heading, or maintain it as a separate linked file for campaigns with active development tracking. See Core_Rules/Skill_Trees.md for the full system.
+Drop this block into a PC character sheet under a SKILLS heading, or maintain it as a separate linked file for campaigns with active development tracking. See Game_Systems/Baseline/skill_trees.md for the full system.
 
 Not all PCs use this block. Add it only when the Emergent Skill Tree System is active for that character.
 
@@ -96,4 +96,4 @@ USAGE NOTES
 - Discovered section: write "none yet" until the first tree initializes
 - Essence section: write "inactive" until the first transformation or binding event
 - Update "Last updated" line at the end of each session where a node changes
-- Full system documentation: Core_Rules/Skill_Trees.md
+- Full system documentation: Game_Systems/Baseline/skill_trees.md

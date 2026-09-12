@@ -152,7 +152,7 @@ FILES TO LOAD ON RESUME
 Use full paths relative to project root. Group by priority.)
 
 **Required (Load before play begins):**
-- [Core rules]: Core_Rules/core_rules.md
+- [Core rules]: Core_Rules/Start_Here.md
 - [Scenario]: World_Building/[Setting]/Scenarios/[Campaign]/[Scenario_File].md
 - [Scenario Package]: [path, if one exists for this scenario]
 - [PC Sheet]: [path to active character sheet]
@@ -231,7 +231,7 @@ END CHECKPOINT
 Captures the PC's complete status so I can render them accurately:
 
 - **Appearance:** How they look physically (wounds, scars, cleanliness, bearing, mood-written-on-body)
-- **Status Conditions:** Active statuses from Section 6 of core rules (these persist between sessions)
+- **Status Conditions:** Active conditions from the active chain's resolved `conditions` site (these persist between sessions)
 - **Equipment:** What they're carrying (backpack, weapons, valuables, magical items)
 - **Mood:** Emotional tenor right now
 - **Relationships:** How key NPCs' attitudes toward them have shifted
@@ -255,7 +255,7 @@ NPCs actively in the scene or directly relevant to current situation:
 - **Recent Interaction:** Last meaningful exchange with PC (not necessarily this session)
 - **Hot because:** The durable causal link that earns them a place on this list
 
-**This is the active cast, and it is meant to shrink as well as grow.** See [[core_rules|core_rules.md]] Section 10 > *Promotion & Demotion* for what promotes and what does not. The short version: a standing World State Register entry, a pending appointment, an open obligation, or a consequence still in flight. Appearing last session is not a cause; being memorable is not a cause. If the **Hot because** field cannot be filled honestly, that NPC belongs on the **Demoted this session** line instead.
+**This is the active cast, and it is meant to shrink as well as grow.** See `Core_Rules/operating_procedure.md` > *Active cast* for what promotes and what does not. The short version: a standing World State Register entry, a pending appointment, an open obligation, or a consequence still in flight. Appearing last session is not a cause; being memorable is not a cause. If the **Hot because** field cannot be filled honestly, that NPC belongs on the **Demoted this session** line instead.
 
 Demotion drops someone from the live roster, not from the world. Their character file stays true and the GM reads it normally the next time the PC seeks them out.
 
@@ -299,7 +299,7 @@ Background continuity:
 
 **This is the cold-start checklist.** If a different model instance (or the same model in a new conversation) picks up this checkpoint, this list tells it exactly what to read before play begins. Nothing should be left to inference or memory.
 
-- **Required:** Always loaded. Core rules, the scenario doc, the PC sheet, all prior session summaries, and the Scenario Package if one exists. Without these, the session cannot run accurately.
+- **Required:** Always loaded. `Core_Rules/Start_Here.md` and the modules it names, the scenario doc, the PC sheet, all prior session summaries, and the Scenario Package if one exists. Without these, the session cannot run accurately.
 - **Contextual:** Files tied to active plot threads. If an NPC interrogation is pending, their character sheet belongs here. If the PC is heading to a specific location next, that location brief belongs here. Update this list every checkpoint — drop files that are no longer relevant, add files that became relevant during the session.
 - **Optional:** Reference material that might be needed but doesn't need to be loaded upfront. Skill trees, item databases, enchantment lists — things the GM can pull mid-session if the scene calls for it.
 
@@ -320,7 +320,7 @@ Background continuity:
 
 ## When to Create a Checkpoint
 
-See Section 10 of [[core_rules|core_rules.md]] for full rules. Quick version:
+See `Core_Rules/operating_procedure.md` > *Checkpoints* for full rules. Quick version:
 
 1. **In-game day ends** — character settling for sleep
 2. **Scenario milestone reached** — major plot beat concluded

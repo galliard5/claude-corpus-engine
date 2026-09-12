@@ -98,7 +98,7 @@ notes below say which.
 > ```
 > A hosted endpoint also exists at `https://dice-rolling-mcp.vercel.app/mcp` for remote-connector use.
 >
-> **`Core_Rules/core_rules.md` > DICE RESOLUTION depends on this server.** Read that section's
+> **`Core_Rules/epistemics.md` > *Never assert what you did not obtain* depends on this server.** Read that section's
 > fallback note before running a session without it.
 
 ---
@@ -163,7 +163,8 @@ A different corpus would swap the profile and leave this file untouched.
 This catches the common failure mode where the on-disk file is edited but the project-instructions mirror is forgotten. The file is small enough (~25 KB) that the whole-file read is cheap.
 
 **Engine directories:**
-- `Core_Rules/` — GM rules (`core_rules.md`), extraction rules, templates (never edit originals)
+- `Core_Rules/` — the GM ruleset. Start at `Start_Here.md`, which names the doctrine, epistemics, presentation and operating-procedure modules; plus extraction rules and templates (never edit originals)
+- `Game_Systems/` — the pluggable rules layer: `Baseline/`, any loaded system module, and their adaptation profiles
 - `Python/` — The Docker MCP servers (corpus-search, index-tools, series-search), the index builder, and `docker-compose.yml`. Part of this repository, but dev-side territory: code-claude's domain, not yours to edit or commit. (See CORPUS SEARCH below.)
 - `System_Documentation/` — Reference docs for the indexer, corpus search, Docker, and audit history. Start at `README.md`. Also dev-side.
 - `Trash/` — Soft-delete destination (no permanent deletes)
@@ -308,7 +309,7 @@ Vector/hybrid require the index to have been built with embeddings; if absent th
 **Reading the results:**
 - **Rank is similarity, not relevance.** A high score means the document resembles the *query* — lexically in `fts`, semantically in `vector`/`hybrid`. The semantic lanes in particular return thematic neighbours with no causal connection to what you're working on. Judge each hit on its content, not its position in the list.
 - **Empty is a weak answer.** No results means *this query* didn't find it — not that it isn't there. A stale index, keyword-only matching in `fts`, or a scope exclusion all return nothing for material that exists. Check freshness with `corpus-search:index_status`, retry in `vector`/`hybrid` or with different wording, and check whether the thing would live outside the indexed scope at all. A confirmed absence means the thing is unestablished and the gap is still not yours to fill; an unconfirmed one establishes nothing, and acting on it is how an existing record gets overwritten by an invented replacement.
-- **Retrieving something doesn't make it live.** For session use, see `Core_Rules/core_rules.md` > *Retrieval Is Not Salience* — a file opened during prep or play is not thereby part of the scene.
+- **Retrieving something doesn't make it live.** For session use, see `Core_Rules/epistemics.md` > *Retrieval is not salience* — a file opened during prep or play is not thereby part of the scene.
 
 **Index scope:** Indexes all `.md` files under `/corpus` except `Trash/`, `Python/`, hidden/build dirs, and the project-specific exclusions configured in `Python/indexer.cfg`. The index is a binary SQLite file at `index/search_index.db` — gitignored, rebuilt on demand.
 

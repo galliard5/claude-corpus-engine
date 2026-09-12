@@ -70,7 +70,7 @@ description: "Quick reference for populating scenes at [Location] with staffing 
 - [Condition]: [Description, onset, urgency — immediate / short-term / gradual]
 - [Add as needed]
 
-*Environmental or operational statuses affecting scenes set here. Drought, flood, fire, blight, bumper harvest, siege, quarantine, festive season, construction, etc. Non-exhaustive. Apply urgency tiers from core rules Section 6. Remove when resolved.*
+*Environmental or operational statuses affecting scenes set here. Drought, flood, fire, blight, bumper harvest, siege, quarantine, festive season, construction, etc. Non-exhaustive. Apply the urgency tiers from the active chain's resolved `conditions` site. Remove when resolved.*
 
 ---
 

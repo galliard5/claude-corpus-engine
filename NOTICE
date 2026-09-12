@@ -59,3 +59,18 @@ to them:
 Licence identifiers above were read from the projects' own published metadata
 on 2026-09-05. They are recorded in good faith and may change upstream; the
 authoritative statement for any component is that project's own licence file.
+
+---
+
+-------------------------------------------------------------------------------
+System Reference Document 5.1
+-------------------------------------------------------------------------------
+
+Game_Systems/DnD5e/ and Game_Systems/Reference/Recall_Tests/ contain material from the
+System Reference Document 5.1, used under the Creative Commons Attribution 4.0 International
+License. The prescribed attribution statement, reproduced exactly:
+
+This work includes material taken from the System Reference Document 5.1 (“SRD 5.1”) by Wizards of the Coast LLC and available at https://dnd.wizards.com/resources/systems-reference-document. The SRD 5.1 is licensed under the Creative Commons Attribution 4.0 International License available at https://creativecommons.org/licenses/by/4.0/legalcode.
+
+Changes: the material in those files has been excerpted and reformatted, and in the recall tests
+individual values are quoted as measurements. It is not reproduced in full.

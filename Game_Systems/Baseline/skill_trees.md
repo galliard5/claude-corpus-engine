@@ -1,5 +1,6 @@
 ---
 name: Emergent Skill Tree System
+module: Baseline
 type: rules-reference
 keywords: [rules, skills, progression, pc, character development, trees, nodes]
 description: Optional character progression system for PCs built around emergent narrative development rather than pre-set advancement paths
@@ -8,9 +9,11 @@ description: Optional character progression system for PCs built around emergent
 EMERGENT SKILL TREE SYSTEM
 ===========================
 
-**Visual reference:** there is no static system diagram on disk. Generate one on demand with
-`visualize:show_widget` using Mermaid — tier structure, branches, and a character's current
-progression all diagram cleanly, and a generated view never goes stale.
+**Visual reference:** there is no static system diagram on disk. Where a diagram-rendering
+capability is available, generate one on demand — tier structure, branches, and a character's
+current progression all diagram cleanly, and a generated view never goes stale. Where it is not,
+describe the structure in prose and say so; do not emit output shaped like a rendered diagram.
+Check the live tool surface rather than assuming a particular tool exists.
 
 OVERVIEW — WHEN TO USE THIS SYSTEM
 ====================================
@@ -31,7 +34,7 @@ This system is optional. Not every campaign or PC benefits from it.
 **Partial use:**
 Some campaigns may justify a single discovered tree or a limited skill block without the full six-archetype foundation. A campaign centred on an estate crisis might generate situational Craft or Social branches reflecting what the PC is navigating, without needing a full character tree. Apply the system where it earns its place and leave it out where it doesn't.
 
-*Per-campaign judgements for the current project are recorded in the project profile.*
+*Whether this system is active, and the per-campaign judgements behind that, are recorded in the campaign profile — `skill_trees: on|off` plus notes, in the campaign's own directory.*
 
 
 CORE PRINCIPLE
@@ -90,7 +93,7 @@ Within any tree, multiple branches can develop in parallel. A branch is a line o
      │           │                     │                     │
     T5 ──  [Capstone]            [Capstone]             [Capstone]
 
-**Visualization:** Tree structure, branches, and tiers diagram cleanly in Mermaid. Use `visualize:show_widget` with Mermaid code to display a character's current tree state, active branches, and progression toward capstones.
+**Visualization:** Tree structure, branches, and tiers diagram cleanly. Where a diagram-rendering capability is connected, use it to display a character's current tree state, active branches, and progression toward capstones.
 
 Branches within the same tree can connect. A node in Branch B might require a node from Branch A as a prerequisite — this happens when the fiction supports it. Cross-branch prerequisites are not designed in advance; they emerge when it is narratively true that one capability depends on another.
 
@@ -109,6 +112,10 @@ TIERS
 | 5    | Capstone   | Fiction only — GM-recognized, cannot be scheduled or requested  |
 
 Tiers 1 and 2 use generic labels (e.g. "Combat Form I", "Combat Form II"). From Tier 3 onward every node receives a specific name — after the character, the moment, the method, or the person the capability came from. The name is part of the advancement.
+
+**Tier 4 and Tier 5 nodes can function as decisive capabilities in a contest.** A capstone represents something the world has noticed — a capability so developed that situations reshape themselves around it. Where a character with a node at that level enters a contest in its domain, evaluate whether it overrides the general balance the way any other decisive factor would, rather than adding to a comparison. *This is the tree's instance of a system rule: `baseline.md` > CRUNCH — CONTEST states decisive capabilities generally. Where a loaded system overrides `contest`, its adaptation profile decides whether that general rule survives — the `Baseline → DnD5e` profile retains it.*
+
+**Not every high-tier node is decisive in every context.** The node's own specificity decides — its name, the gate it came through, and the contexts where it applies and does not. A capstone in one domain is an ordinary capability everywhere else.
 
 
 FOUNDATION ARCHETYPE NODES (UNIVERSAL ROOTS)
@@ -158,7 +165,7 @@ Essence trees are the most personal in the system. Two characters who went throu
 
 What Essence becomes depends entirely on what happened to the character. A body transformation tends to produce branches around inhabiting the new form, translating unfamiliar senses into usable capability, and understanding the institution that performed the change. A soul bound into an object tends to produce branches around internal architecture, projecting awareness outward, and interfacing with external systems. A mechanical conversion tends to produce branches around chassis integration, managing the cognitive cost, and communicating through machinery.
 
-These are starting points, not a taxonomy — name the branches from inside the character's experience. *Concrete per-setting starting points for the current project are recorded in the project profile.*
+These are starting points, not a taxonomy — name the branches from inside the character's experience. *Concrete per-setting starting points are recorded with the setting, in `World_Building/Project_Profile.md` > Essence archetype — setting starting points. The campaign profile records only the per-campaign judgements.*
 
 New settings: define Essence's initial branch during scenario creation, at the moment the transformation or binding occurs.
 
@@ -226,9 +233,9 @@ When a Tier 3 or higher node is due, the GM names it using these constraints:
 TRACKING FORMAT
 ===============
 
-The skill block is recorded in a dedicated section of the character sheet, or in a linked Skill_Tree_Block file for campaigns where tracking is more active. See Skill_Tree_Block.md in Templates/.
+The skill block is recorded in a dedicated section of the character sheet, or in a linked Skill_Tree_Block file for campaigns where tracking is more active. See `../../Core_Rules/Templates/Skill_Tree_Block.md`.
 
-For visual tracking of a character's skill trees and branch progression, use `visualize:show_widget` with Mermaid code to display the character's current tree state, active branches, and progression toward capstones. Diagrams can be regenerated any time to reflect new tiers, branches, or discovered trees as they develop.
+For visual tracking of a character's skill trees and branch progression, use a diagram-rendering capability where one is connected. Diagrams can be regenerated any time to reflect new tiers, branches, or discovered trees as they develop. Where no such capability exists, the text format below is the tracking format and nothing is lost.
 
 Standard text format:
 

@@ -35,6 +35,35 @@ while it stays rare.
 
 ---
 
+## 2026-09-12
+
+### Changed
+
+> **Breaking — action required:** `Core_Rules/core_rules.md`, `Core_Rules/Skill_Trees.md` and
+> `Core_Rules/Model_Selection_Guide.md` are removed. Anything that loads them by name — a client
+> instruction file, a project profile, a saved prompt — must point at `Core_Rules/Start_Here.md`
+> instead. That file names every rules file a session loads and resolves which game system is in
+> force. Campaigns without a `Campaign_Profile.md` keep running on the shipped defaults; nothing
+> needs to be created for them.
+
+- **The GM ruleset is split into modules.** `core_rules.md` becomes four fixed modules in
+  `Core_Rules/` — `gm_rules.md` (how to run the game), `epistemics.md` (what may be known),
+  `presentation.md` (what the player sees) and `operating_procedure.md` (session harness) — plus
+  `scenario_prep.md`. `Start_Here.md` is the single entry point and gives the load order.
+- **Game rules move to `Game_Systems/`.** `Baseline/` holds the shipped rules-light system and the
+  Emergent Skill Tree System (`skill_trees.md`, formerly `Core_Rules/Skill_Trees.md`). `DnD5e/` is
+  a sample d20 module that supports SRD 5.1 (2014 rules) only and refuses any other edition; its
+  adaptation profile is in `Adaptations/`.
+- **Per-campaign selections** go in `Campaign_Profile.md` in the campaign's directory, copied from
+  `Core_Rules/Templates/Campaign_Profile_Template.md`. It selects doctrine and presentation options
+  and names the game system chain. It does not restate setting-level material, which stays in the
+  project profile.
+- **Invalid configurations stop before play.** An unsupported edition, a multi-module chain without
+  an adaptation profile, or a stale compiled ruleset is reported with the file involved rather than
+  replaced by defaults — see `Start_Here.md`.
+- **Homebrew rules sidecars** matching `homebrew_*` are gitignored by default.
+- **`NOTICE`** carries the CC-BY-4.0 attribution for the SRD 5.1 material in `Game_Systems/`.
+
 ## 2026-09-09
 
 ### Added

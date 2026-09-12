@@ -88,3 +88,6 @@ desktop.ini
 !/Working_Documents/README.md
 !/Working_Documents/.gitignore
 !/Working_Documents/.gitattributes
+
+# Homebrew rules sidecars are per-campaign and private by default.
+homebrew_*

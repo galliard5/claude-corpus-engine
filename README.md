@@ -81,7 +81,7 @@ absent tool fails in a way that looks like the model misbehaving rather than a s
 
 - **A series database.** The series-search server ships without one. `Series_Search_Server.md`
   documents the schema so you can build your own; sourcing the text is your responsibility.
-- **Dice rolling.** `Core_Rules/core_rules.md` requires a real-RNG MCP server for resolution rolls,
+- **Dice rolling.** `Core_Rules/epistemics.md` requires a real-RNG MCP server for resolution rolls,
   on the grounds that a language model asked for a d20 produces a plausible-looking number rather
   than a random one. That server is third-party. The rules include a fallback for running without
   it — the short version is that you disclose it rather than quietly inventing numbers.
@@ -129,7 +129,7 @@ A few decisions that aren't obvious from the code:
   definition most likely to drift. The reader derives it, so changing the definition later
   re-classifies old records instead of invalidating them.
 - **Retrieval is not salience.** Opening a file during prep doesn't make its contents part of the
-  scene. `core_rules.md` covers why this distinction matters when a model has search available.
+  scene. `Core_Rules/epistemics.md` covers why this distinction matters when a model has search available.
 - **Transcripts are captured, not recalled.** A model asked to reproduce a session from context
   can do it — the turns are right there — but not verifiably: fidelity decays silently over a long
   reproduction and it cannot say which passages drifted. For the one artifact whose whole value is

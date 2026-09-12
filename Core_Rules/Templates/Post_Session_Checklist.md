@@ -102,7 +102,7 @@ Before dropping anyone, push anything worth keeping into their character file (S
 
 **Do not demote from the RECURRING NPCs — LOCATION-TIED block.** Where the location has no brief with a Background NPCs — Consistency Layer section, that block is the only record of the person's schedule and pattern. Carry them forward and note the missing brief.
 
-See `Core_Rules/core_rules.md` Section 10 > *Promotion & Demotion* for the full criteria.
+See `Core_Rules/operating_procedure.md` > *Active cast* for the full criteria.
 
 ---
 

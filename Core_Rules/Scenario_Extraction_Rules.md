@@ -590,5 +590,5 @@ This ensures future scenarios have a clear picture of what's changed since the l
 - [[Master_Calendar]] — Central timeline and event log
 - [[Timeline_Template]] — Scenario-specific timeline
 - [[file_system_instructions]] — For file naming and structure conventions
-- [[core_rules]] — For understanding world tone and continuity
+- `Core_Rules/gm_rules.md` — For understanding world tone and continuity
 

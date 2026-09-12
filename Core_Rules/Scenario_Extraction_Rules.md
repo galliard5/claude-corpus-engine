@@ -11,27 +11,33 @@ description: Post-scenario protocol for extracting NPCs, locations, and world da
 
 ---
 
-## MODEL REQUIREMENT CHECK
+## CAPABILITY REQUIREMENT
 
-**BEFORE PROCEEDING:** This extraction task requires Claude Sonnet or higher.
+**Extraction is a Session-class task at minimum.** It reads a whole scenario's worth of play,
+cross-references it against existing canon, and writes to files the rest of the corpus depends on.
+Capability classes are defined in `Core_Rules/operating_procedure.md` > *Capability classes, not
+model names* — describe the role, never the vendor's product name, because a brand gate stops
+meaning anything the moment the host changes.
 
-**Current Model:** [CHECK ACTIVE MODEL]
+**Escalate to Preparation class when** the scenario is large (roughly eight or more checkpoints),
+when new material contradicts established canon, or when the same entity has to be reconciled across
+several files. These are the cases where getting it wrong cascades, which is the Preparation class's
+whole definition.
 
-### Model Check Logic
+**Mechanical class is not adequate for this task.** It lacks the context depth to hold canon
+consistency across a full scenario, and the characteristic failure is quiet: dropped
+cross-references, an entity written twice under two names, a contradiction carried into a world file
+rather than caught. None of those announce themselves in the output.
 
-**IF running Sonnet or Opus:**
-- ✅ Proceed to extraction immediately
-- No concerns, adequate capability for this task
+**If only a Mechanical-class capability is available, disclose and choose — do not proceed silently.**
 
-**IF running Haiku:**
-- ⚠️ **PAUSE and display this message:**
+> Say plainly that the available capability is below what extraction needs, and name what that risks:
+> missed cross-references and contradictions written into world files rather than flagged. Then wait.
+> Do not begin extraction on an assumption about what the operator would have wanted.
 
-> **Model recommendation:** This extraction task is best performed with Claude Sonnet. Haiku may miss cross-references, struggle with large scenarios (8+ checkpoints), or require re-processing.
->
-> **Proceed anyway?** Confirm to continue with Haiku, or switch to Sonnet for better results.
-
-- Wait for explicit user confirmation before continuing
-- If confirmed, proceed with extra caution (verify more frequently, smaller batches)
+On an explicit instruction to continue anyway: work in **smaller batches**, verify each against canon
+before moving on, and **list every entity you were unsure about** at the end. A flagged uncertainty
+is recoverable; a silent omission is the thing this rule exists to prevent.
 - If not confirmed, stop and recommend user upgrade model
 
 ---

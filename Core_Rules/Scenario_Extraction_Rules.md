@@ -38,7 +38,11 @@ rather than caught. None of those announce themselves in the output.
 On an explicit instruction to continue anyway: work in **smaller batches**, verify each against canon
 before moving on, and **list every entity you were unsure about** at the end. A flagged uncertainty
 is recoverable; a silent omission is the thing this rule exists to prevent.
-- If not confirmed, stop and recommend user upgrade model
+
+**Without that instruction, stop** and say what is needed: extraction wants a Session-class
+capability or better, and the operator selects that between sessions — see
+`Core_Rules/operating_procedure.md` > *Capability classes, not model names*, which also explains why
+a session cannot switch its own.
 
 ---
 

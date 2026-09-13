@@ -14,6 +14,12 @@
 # scaffold to ship. The orientation document lives at the root instead, as
 # World_Building_README.md, which this repository can actually carry.
 /World_Building/
+
+# Game-system modules whose licence is incompatible with Apache-2.0 live in their
+# own private repositories nested here, ignored wholesale like World_Building/.
+# Eclipse Phase is CC BY-NC-SA 4.0: NonCommercial and ShareAlike both conflict
+# with this repository's licence, so its text, data and module must never ship.
+/Game_Systems/EclipsePhase/
 /Writing_Projects/
 /Stories/
 /Perchance_prompts/

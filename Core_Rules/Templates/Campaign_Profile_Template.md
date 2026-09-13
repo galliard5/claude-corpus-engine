@@ -108,7 +108,7 @@ being restated here.
 the fantastic sits inside everyday life and what the prose should and should not reach for are
 shared by every campaign in that world; restating them per campaign is how two campaigns in one
 setting quietly drift apart. `Core_Rules/gm_rules.md` sends the GM to the setting's register, and that
-resolves at `World_Building/Project_Profile.md` > *PROSE REGISTER*.
+resolves at `World_Building/[Setting]/Setting_Profile.md` > *PROSE REGISTER*.
 
 ## Skill tree notes
 

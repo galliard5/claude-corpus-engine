@@ -87,10 +87,11 @@ silently discards material it should have kept.
 directory the campaign sits under** — a campaign at `World_Building/[Setting]/Scenarios/[Campaign]/`
 belongs to `[Setting]`, and that derivation is the rule rather than a guess.
 
-Its prose register — period, tone, how the
-fantastic sits in everyday life — is at `World_Building/Project_Profile.md` > *PROSE REGISTER*, and
-its world state is that setting's own `World_State_Register.md`. These are **per setting**, shared
-by every campaign in it; they are not recorded per campaign.
+Its prose register — period, tone, how the fantastic sits in everyday life — is in that setting's
+own `World_Building/[Setting]/Setting_Profile.md`, and its world state is that setting's own
+`World_State_Register.md`. These are **per setting**, shared by every campaign in it; they are not
+recorded per campaign. A setting with no profile has no recorded register: say so once, and do not
+invent one.
 
 **5. Load the scenario**, if one is in play. `scenario_prep.md` gives the order: the scenario
 package first, then the scenario file, the PC sheet, active NPC files, location files for the

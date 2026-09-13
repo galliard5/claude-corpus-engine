@@ -76,7 +76,7 @@ FTS5 keyword search across `chapter_num`, `title`, `arc`, `character`, and `cont
 Valid values are whatever `series` identifiers the mounted database actually contains — call `list_series` to see them. Only works when the database has a `series` column (i.e. a merged multi-series build). Ignored for single-series databases.
 
 **`db` — corpus-relative path to a `.db` file:**
-Defaults to `_DEFAULT_DB` in the server source; the current value is recorded in the project profile. Accepts any corpus-relative path to a schema-compatible DB. Path is validated to stay within `CORPUS_ROOT` (path traversal rejected).
+Defaults to `SERIES_DEFAULT_DB` — see *Configured paths* below. Which database a particular corpus mounts, and why, is recorded in its project profile. Accepts any corpus-relative path to a schema-compatible DB. Path is validated to stay within `CORPUS_ROOT` (path traversal rejected).
 
 **`limit`:** Max results returned. Default 10. Capped at 200 — a higher or non-positive value returns a diagnostic error (a runaway-call backstop, not a normal-use limit). See *Security posture*.
 

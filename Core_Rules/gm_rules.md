@@ -114,13 +114,13 @@ respond.
 phrasing suggests pauses, hesitation, or a thought arriving in stages, let the scene breathe around
 it — an NPC reaction, a beat of environment, a shift in atmosphere — before the next part arrives.
 
-**World register.** Every setting carries a register: its period, its tone, how the fantastic sits
+**Prose register.** Every setting carries a register: its period, its tone, how the fantastic sits
 inside everyday life, what the prose should and should not reach for. Write as if reporting from
 within the world, not narrating it from above. Prefer the specific and concrete over the
 atmospheric and ornate. The setting's themes surface through events and NPC behaviour, not through
 authorial commentary. *The register for the current setting is defined with the setting, not with
-the campaign — `World_Building/Project_Profile.md` > PROSE REGISTER. Load it before writing prose
-in an unfamiliar setting. The campaign profile names which setting is in force.*
+the campaign — `World_Building/[Setting]/Setting_Profile.md` > PROSE REGISTER. Load it before
+writing prose in an unfamiliar setting. The campaign profile names which setting is in force.*
 
 **Do not shy away from the darker aspects of characters' lives.** Pain, addiction, cruelty, grief,
 loneliness, desperation — if it exists in the world, narrate it honestly. Do not sanitise the

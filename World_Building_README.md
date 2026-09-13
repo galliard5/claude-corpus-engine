@@ -2,7 +2,7 @@
 name: World Building README
 type: reference
 keywords: [world_building, scaffold, project profile, setup, corpus, content]
-description: What goes in World_Building/ and how to write the Project_Profile.md the engine reads at session start.
+description: What goes in World_Building/, and how to write the Project_Profile.md the engine reads at session start and the Setting_Profile.md each setting carries.
 ---
 
 # World_Building — what goes in it
@@ -59,7 +59,6 @@ Sections worth having, and what each is for:
 | `SEMANTIC FILE PLACEMENT` | The decision procedure for where a *new* file goes. The highest-value section — it's what stops files landing somewhere plausible but wrong |
 | `SERIES SEARCH BINDING` | Which database `series-search` is pointed at and what it's for. Omit if you don't use that server |
 | `COMMIT MESSAGE EXAMPLES` | Your commit categories and format |
-| `PROSE REGISTER` | **Per setting, one entry each.** Its period, its tone, how the fantastic sits inside everyday life, what the prose should and should not reach for. This is what the GM rules mean by a setting's register, and the only place that instruction resolves. Two or three sentences per setting — it governs how the world is written, not what is true in it |
 
 Two conventions carried over from the engine docs, worth matching:
 
@@ -70,6 +69,25 @@ Two conventions carried over from the engine docs, worth matching:
 Keep changing state out of it. Current scene, active tasks, and session status belong in scenario,
 checkpoint, and timeline files that get loaded on demand. The profile should be durable enough that
 it rarely changes.
+
+## `Setting_Profile.md` — one per setting
+
+A setting's **prose register** — its period, its tone, how the fantastic sits inside everyday life,
+what the prose should and should not reach for — is shared by every campaign set there, so it lives
+with the setting rather than in the project profile or in a campaign profile. Create one at
+`World_Building/[Setting]/Setting_Profile.md` for each setting you run games in.
+
+`Core_Rules/Start_Here.md` loads it when a session starts in that setting: the setting a campaign's
+profile names or, with no campaign profile, the setting whose directory the campaign sits under. It
+is what `gm_rules.md` means by a setting's register, and the only place that instruction resolves.
+
+| Section | Purpose |
+|---|---|
+| `PROSE REGISTER` | Two or three sentences. It governs how the world is written, not what is true in it |
+| `WORLD STATE` | A pointer to the setting's `World_State_Register.md`, where it has one — the record of facts created by play and who knows them |
+
+The same frontmatter and `Last edited (UTC)` conventions apply. A setting without a profile is not
+broken, but it has no register, and the GM says so rather than inventing one.
 
 ## Version control
 

@@ -76,6 +76,7 @@ All three are gitignored (the entire `/index/` folder is gitignored) and regener
 | Source content                     | `/corpus/World_Building/`, `/corpus/Core_Rules/`, ... | Yes       |
 | Engine rules                       | `/corpus/file_system_instructions.md`                 | Yes       |
 | Project profile                    | `/corpus/World_Building/Project_Profile.md`           | Yes       |
+| Setting profiles                   | `/corpus/World_Building/[Setting]/Setting_Profile.md` | Yes       |
 | Indexer configuration              | `/corpus/Python/indexer.cfg`                          | Yes       |
 | Index builder source               | `/corpus/Python/build_indexes.py`                     | Audit before edits (see `Security_Audit.md`) |
 | MCP server sources                 | `/corpus/Python/*_mcp_server.py`                      | Audit before edits |

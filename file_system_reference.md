@@ -5,7 +5,7 @@ description: Supplementary procedures, tool schemas, and standards — load on d
 schemas_verified_utc: 2026-09-05T19:51:00Z
 ---
 
-> **Last edited (UTC):** 2026-09-05T19:51:00Z
+> **Last edited (UTC):** 2026-09-13T00:05:00Z
 > Held in the body rather than the frontmatter so it survives a copy-paste into a
 > project-instructions field, where frontmatter is discarded. Bump on every edit.
 
@@ -342,7 +342,7 @@ FTS5 keyword search across the series database. Returns ranked results with chap
 params:
   query: string (required)         — FTS5 expression, see syntax below
   series?: string|null             — one series within a merged db; valid values depend on the mounted database
-  db?: string|null                 — corpus-relative path to a .db; default set in the profile
+  db?: string|null                 — corpus-relative path to a .db; default from SERIES_DEFAULT_DB
   limit?: integer                  — default 10, capped at 200
 ```
 **FTS5 query syntax (tokenizer gotchas — hyphens and dots are separators):**
@@ -360,14 +360,14 @@ Full text of a chapter by exact `chapter_num` match.
 params:
   chapter_num: string (required)   — e.g. "499", "CLASSIFIED", "0.1.3", "Prologue"
   series?: string|null             — required when the same chapter_num exists in multiple series
-  db?: string|null                 — corpus-relative path; default set in the profile
+  db?: string|null                 — corpus-relative path; default from SERIES_DEFAULT_DB
 ```
 
 ### `series-search:list_series`
 Overview of a database: series names, chapter counts, arc breakdown. Good for orientation before searching.
 ```
 params:
-  db?: string|null                 — corpus-relative path; default set in the profile
+  db?: string|null                 — corpus-relative path; default from SERIES_DEFAULT_DB
 ```
 
 **Default database:** project-specific — see `World_Building/Project_Profile.md` > SERIES SEARCH BINDING.

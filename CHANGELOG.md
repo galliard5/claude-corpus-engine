@@ -46,6 +46,16 @@ while it stays rare.
 > force. Campaigns without a `Campaign_Profile.md` keep running on the shipped defaults; nothing
 > needs to be created for them.
 
+> **Breaking — action required:** each setting's prose register moves out of
+> `World_Building/Project_Profile.md` into `World_Building/[Setting]/Setting_Profile.md`, one file
+> per setting. If your project profile has a `PROSE REGISTER` section, move each setting's entry
+> into that setting's own profile under the same heading; `Start_Here.md` and `gm_rules.md` no
+> longer look for it in the project profile. A setting with no profile is reported as having no
+> register rather than stopping play.
+
+- **Setting profiles.** `World_Building/[Setting]/Setting_Profile.md` holds what every campaign in a
+  setting shares: its prose register, and a pointer to its world state. `World_Building_README.md`
+  describes the file.
 - **The GM ruleset is split into modules.** `core_rules.md` becomes four fixed modules in
   `Core_Rules/` — `gm_rules.md` (how to run the game), `epistemics.md` (what may be known),
   `presentation.md` (what the player sees) and `operating_procedure.md` (session harness) — plus
@@ -56,8 +66,8 @@ while it stays rare.
   adaptation profile is in `Adaptations/`.
 - **Per-campaign selections** go in `Campaign_Profile.md` in the campaign's directory, copied from
   `Core_Rules/Templates/Campaign_Profile_Template.md`. It selects doctrine and presentation options
-  and names the game system chain. It does not restate setting-level material, which stays in the
-  project profile.
+  and names the game system chain. It does not restate setting-level material, which lives in the
+  setting's own profile.
 - **Invalid configurations stop before play.** An unsupported edition, a multi-module chain without
   an adaptation profile, or a stale compiled ruleset is reported with the file involved rather than
   replaced by defaults — see `Start_Here.md`.

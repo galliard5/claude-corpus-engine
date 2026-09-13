@@ -72,10 +72,12 @@ it rarely changes.
 
 ## `Setting_Profile.md` — one per setting
 
-A setting's **prose register** — its period, its tone, how the fantastic sits inside everyday life,
-what the prose should and should not reach for — is shared by every campaign set there, so it lives
-with the setting rather than in the project profile or in a campaign profile. Create one at
-`World_Building/[Setting]/Setting_Profile.md` for each setting you run games in.
+What belongs to one world rather than to one campaign lives with that world, rather than in the
+project profile or in a campaign profile: its **prose register** — period, tone, how the fantastic
+sits inside everyday life, what the prose should and should not reach for — which every campaign
+there shares, and, if you use skill trees, what its transformations do to a character, which applies
+to the campaigns each programme names. Create one at `World_Building/[Setting]/Setting_Profile.md`
+for each setting you run games in.
 
 `Core_Rules/Start_Here.md` loads it when a session starts in that setting: the setting a campaign's
 profile names or, with no campaign profile, the setting whose directory the campaign sits under. It
@@ -84,7 +86,13 @@ is what `gm_rules.md` means by a setting's register, and the only place that ins
 | Section | Purpose |
 |---|---|
 | `PROSE REGISTER` | Two or three sentences. It governs how the world is written, not what is true in it |
+| `PROGRESSION` | Optional. What a transformation or binding does to Essence in this setting, then one block per *programme* — the institution or process that performs it. Each block names the campaigns it covers on a `Campaigns:` line, and lists their Essence starting branches. A named campaign runs skill trees without needing a campaign profile; a block with no `Campaigns:` line names none, and turns trees on for no campaign |
 | `WORLD STATE` | A pointer to the setting's `World_State_Register.md`, where it has one — the record of facts created by play and who knows them |
+
+Programmes, not settings, own the starting branches, because two campaigns in one world can be
+changed by different things. A campaign written differently from the rest of its setting — a darker
+key, say — records only that difference, in its campaign profile's *Register adjustment*; it never
+copies the register.
 
 The same frontmatter and `Last edited (UTC)` conventions apply. A setting without a profile is not
 broken, but it has no register, and the GM says so rather than inventing one.

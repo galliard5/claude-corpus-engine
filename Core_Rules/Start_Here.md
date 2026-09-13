@@ -45,17 +45,19 @@ manifest naming which rules are in force, which edition, which adaptation profil
 sidecars, which setting, and every doctrine or presentation selection differing from the shipped
 default. Format: `Templates/Campaign_Profile_Template.md`.
 
-**Every variable input below is named by that file.** The four fixed modules are named here instead,
-because they do not vary — that is what makes this file a stable address.
+**Every variable input below resolves in the same order:** a value the campaign profile states; then
+what the campaign's setting profile defines for it, where it defines anything; then the shipped
+default. The four fixed modules are named here instead, because they do not vary — that is what
+makes this file a stable address.
 
-> **A campaign with no profile is not an error.** The shipped defaults are then in force: Baseline
-> alone, doctrine and presentation exactly as their modules declare them, and the setting is the one
-> whose directory the campaign sits under. A profile is only needed to *change* something, so
-> campaigns that predate this mechanism keep running untouched and nothing has to be migrated.
+> **A campaign with no profile is not an error.** It takes what its setting profile defines for it,
+> and the shipped defaults for everything else: Baseline alone, doctrine and presentation exactly as
+> their modules declare them, and the setting is the one whose directory the campaign sits under. A
+> profile is only needed to *change* something, so campaigns that predate this mechanism keep running
+> untouched and nothing has to be migrated.
 >
-> One exception while the profile split is incomplete: per-campaign judgements recorded in
-> `World_Building/Project_Profile.md` — notably which campaigns run skill trees — remain
-> authoritative until they move into profiles of their own.
+> Today a setting profile defines one such value: whether skill trees run, for the campaigns a
+> programme in it names. Step 3 resolves it.
 
 **3. Resolve the rules. Two branches, and only one of them runs.**
 
@@ -75,9 +77,19 @@ resolving conflicts that were resolved at build time.
 - **With a profile:** the chain in the order it gives, lowest first, then its adaptation profile.
 - **With no profile:** `Game_Systems/Baseline/baseline.md` alone. Baseline is the default chain, and
   naming it here is what makes the no-profile case a real instruction rather than an implication.
-  Where `World_Building/Project_Profile.md` records that this campaign runs skill trees, also load
-  `Game_Systems/Baseline/skill_trees.md` — that record is the campaign's `skill_trees: on` until the
-  profile split moves it, and an exception nothing acts on is not an exception.
+- **Skill trees, in either case.** Where Baseline supplies progression, also load
+  `Game_Systems/Baseline/skill_trees.md` if the campaign runs it. That resolves in this order, and
+  the first that answers wins:
+  1. The campaign profile's `skill_trees`, where it is `on` or `off`. A profile that leaves the key
+     empty, or omits it, does not answer, and resolution falls through to the next step.
+  2. **On**, where the setting's `Setting_Profile.md` > *PROGRESSION* has a programme block whose
+     `Campaigns:` line names this campaign. Read that section now rather than at step 4: the setting
+     is already known from the profile or the directory, and resolving the rules first would run a
+     listed campaign without its trees and say nothing.
+  3. **Off**, the shipped default.
+
+  A system that replaces Baseline's progression — `DnD5e` does — leaves trees off whatever the
+  record says.
 
 Treat that result as **provisional** where the chain is longer than one module: a manifest alone
 cannot express that a site extends or partitions rather than overriding, so an unresolved chain
@@ -89,8 +101,10 @@ belongs to `[Setting]`, and that derivation is the rule rather than a guess.
 
 Its prose register — period, tone, how the fantastic sits in everyday life — is in that setting's
 own `World_Building/[Setting]/Setting_Profile.md`, and its world state is that setting's own
-`World_State_Register.md`. These are **per setting**, shared by every campaign in it; they are not
-recorded per campaign. A setting with no profile has no recorded register: say so once, and do not
+`World_State_Register.md`. These are **per setting**, shared by every campaign in it, and not
+restated per campaign: a campaign written differently records only the difference, under its
+profile's *Register adjustment*, which applies on top of the setting's register. A setting with no
+profile, or whose profile records no register, has no recorded register: say so once, and do not
 invent one.
 
 **5. Load the scenario**, if one is in play. `scenario_prep.md` gives the order: the scenario

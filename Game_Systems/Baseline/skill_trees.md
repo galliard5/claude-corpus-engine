@@ -34,7 +34,7 @@ This system is optional. Not every campaign or PC benefits from it.
 **Partial use:**
 Some campaigns may justify a single discovered tree or a limited skill block without the full six-archetype foundation. A campaign centred on an estate crisis might generate situational Craft or Social branches reflecting what the PC is navigating, without needing a full character tree. Apply the system where it earns its place and leave it out where it doesn't.
 
-*Whether this system is active, and the per-campaign judgements behind that, are recorded in the campaign profile — `skill_trees: on|off` plus notes, in the campaign's own directory.*
+*Whether this system is active is the campaign's `skill_trees` — `on` or `off` in its campaign profile or, where the profile leaves it empty or there is no profile, on for a campaign that a programme in its setting profile names, and off otherwise. `Core_Rules/Start_Here.md` step 3 gives the order. The per-campaign judgements behind it go in the campaign profile's notes.*
 
 
 CORE PRINCIPLE
@@ -165,7 +165,7 @@ Essence trees are the most personal in the system. Two characters who went throu
 
 What Essence becomes depends entirely on what happened to the character. A body transformation tends to produce branches around inhabiting the new form, translating unfamiliar senses into usable capability, and understanding the institution that performed the change. A soul bound into an object tends to produce branches around internal architecture, projecting awareness outward, and interfacing with external systems. A mechanical conversion tends to produce branches around chassis integration, managing the cognitive cost, and communicating through machinery.
 
-These are starting points, not a taxonomy — name the branches from inside the character's experience. *Concrete per-setting starting points are recorded with the setting, in `World_Building/Project_Profile.md` > Essence archetype — setting starting points. The campaign profile records only the per-campaign judgements.*
+These are starting points, not a taxonomy — name the branches from inside the character's experience. *Concrete starting points are recorded with the setting, in `World_Building/[Setting]/Setting_Profile.md` > PROGRESSION: what the setting's transformations do to Essence, then one block per programme holding its starting branches, since a setting may hold more than one. The campaign profile records only the per-campaign judgements.*
 
 New settings: define Essence's initial branch during scenario creation, at the moment the transformation or binding occurs.
 

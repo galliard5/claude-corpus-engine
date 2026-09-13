@@ -12,16 +12,19 @@ CAMPAIGN PROFILE — TEMPLATE
 its compiled ruleset. That filename is what `Core_Rules/Start_Here.md` looks for; a profile under any
 other name will not be found.
 
-It is the campaign's answer to every question the modules leave open. **A campaign without one is
-not broken** — the shipped defaults apply and the setting is the directory it sits under. Write a
-profile when you want to change something.
+It is where the campaign gives its own answer to a question the modules leave open. **A campaign
+without one is not broken** — it takes what its setting profile defines for it, the shipped defaults
+apply to everything else, and the setting is the directory it sits under. Write a profile when you
+want to change something. A value stated here overrides the setting's; a key left empty or omitted
+does not answer, and the setting's value or the shipped default applies.
 
-**This is a selection, not a rule change.** Three levels are easy to confuse:
+**This is a selection, not a rule change.** Four levels are easy to confuse:
 
 | | What it does | Where it lives |
 |---|---|---|
 | **Shipped module** | Declares defaults and the menu of valid values | `Core_Rules/`, `Game_Systems/` |
-| **Campaign profile** | *Selects* among the options a module offers | the campaign directory — this file |
+| **Setting profile** | Supplies a value to the campaigns it names, where it defines one — today, skill trees for a programme's campaigns | `World_Building/[Setting]/Setting_Profile.md` |
+| **Campaign profile** | *Selects* among the options a module offers, overriding the setting | the campaign directory — this file |
 | **Homebrew sidecar** | *Changes or adds rules* | beside the module, or `homebrew_campaign.md` |
 
 Putting a rule change in the profile does nothing — no module reads it there. Putting a toggle in
@@ -89,9 +92,11 @@ scene_tag: on
 
 # ---- Progression ---------------------------------------------------------
 
-skill_trees: off
-# on  — the Emergent Skill Tree System is active for this PC
-# off — no tree tracking
+skill_trees:
+# on    — the Emergent Skill Tree System is active for this PC
+# off   — no tree tracking
+# empty — inherit: on where the setting profile's PROGRESSION lists this
+#         campaign under a programme, otherwise off. Core_Rules/Start_Here.md step 3.
 # Ignored when the active system defines its own advancement.
 ```
 
@@ -110,17 +115,31 @@ shared by every campaign in that world; restating them per campaign is how two c
 setting quietly drift apart. `Core_Rules/gm_rules.md` sends the GM to the setting's register, and that
 resolves at `World_Building/[Setting]/Setting_Profile.md` > *PROSE REGISTER*.
 
+## Register adjustment
+
+Leave this empty unless this campaign is written differently from the rest of its setting — the same
+world in a darker key, say. **Record only the difference, and name what it departs from.** The
+setting's register still loads first and this is applied on top of it, so when the setting's
+register changes, this campaign follows it everywhere it has not said otherwise. Copying the whole
+register here instead is the drift the section above warns about.
+
+> [The adjustment, or empty.]
+
+An added *mechanic* is not a register adjustment. It changes rules, and belongs in a homebrew
+sidecar.
+
 ## Skill tree notes
 
-Where `skill_trees: on`, record the **per-campaign** judgement `Game_Systems/Baseline/skill_trees.md` asks for: whether
+Where trees run for this campaign, record the **per-campaign** judgement `Game_Systems/Baseline/skill_trees.md` asks for: whether
 this PC is a genuine blank slate, and what this campaign treats as capability development.
 
 > [Notes, or "not applicable".]
 
-**Essence starting points are per-setting, and are not recorded here.** What a transformation or a
-binding produces is a fact about the setting's own machinery, and two campaigns in the same world
-should not answer it differently. They live at `World_Building/Project_Profile.md` > *Essence
-archetype — setting starting points*.
+**Essence is not recorded here.** What a transformation does to Essence is a fact about the setting,
+and the starting branches are a fact about the programme that performed it — a setting may hold more
+than one programme, and two campaigns run by the same programme should not answer it differently.
+Both live in the setting profile, `World_Building/[Setting]/Setting_Profile.md` > *PROGRESSION*. A
+campaign departing from its programme records the departure here and does not copy the block.
 
 ---
 

@@ -43,19 +43,25 @@ while it stays rare.
 > `Core_Rules/Model_Selection_Guide.md` are removed. Anything that loads them by name — a client
 > instruction file, a project profile, a saved prompt — must point at `Core_Rules/Start_Here.md`
 > instead. That file names every rules file a session loads and resolves which game system is in
-> force. Campaigns without a `Campaign_Profile.md` keep running on the shipped defaults; nothing
-> needs to be created for them.
+> force. Campaigns without a `Campaign_Profile.md` keep running on the shipped defaults, plus
+> anything their setting profile defines for them; nothing needs to be created for them.
 
-> **Breaking — action required:** each setting's prose register moves out of
+> **Breaking — action required:** setting- and programme-scoped material moves out of
 > `World_Building/Project_Profile.md` into `World_Building/[Setting]/Setting_Profile.md`, one file
-> per setting. If your project profile has a `PROSE REGISTER` section, move each setting's entry
-> into that setting's own profile under the same heading; `Start_Here.md` and `gm_rules.md` no
-> longer look for it in the project profile. A setting with no profile is reported as having no
-> register rather than stopping play.
+> per setting, and the project profile is no longer read for any of it. Move each setting's
+> `PROSE REGISTER` entry into that setting's profile under the same heading. If your project profile
+> records which campaigns run skill trees, record that again — as a programme block in the setting's
+> `PROGRESSION` section, or as `skill_trees: on` in a campaign profile — or those campaigns run
+> without trees. A setting with no profile is reported as having no register rather than stopping
+> play.
 
-- **Setting profiles.** `World_Building/[Setting]/Setting_Profile.md` holds what every campaign in a
-  setting shares: its prose register, and a pointer to its world state. `World_Building_README.md`
-  describes the file.
+- **Setting profiles.** `World_Building/[Setting]/Setting_Profile.md` holds material belonging to
+  the setting: the prose register and world-state pointer every campaign there shares, and
+  optionally a `PROGRESSION` section whose programme blocks carry Essence starting branches and turn
+  skill trees on for the campaigns they list. `World_Building_README.md` describes the file.
+- **Campaign profiles can adjust their setting's register** under *Register adjustment*, recording
+  only the difference. `skill_trees` in the template is now empty by default, so a copied template
+  inherits from the setting instead of switching trees off.
 - **The GM ruleset is split into modules.** `core_rules.md` becomes four fixed modules in
   `Core_Rules/` — `gm_rules.md` (how to run the game), `epistemics.md` (what may be known),
   `presentation.md` (what the player sees) and `operating_procedure.md` (session harness) — plus

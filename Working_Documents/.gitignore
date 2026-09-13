@@ -13,6 +13,11 @@
 # Everything else in this directory belongs to the local repository. That is the whole
 # division: the engine repo owns the scaffolding that defines the convention, the local repo
 # owns the documents it holds.
-README.md
-.gitignore
-.gitattributes
+#
+# Anchored with a leading slash, so they match only at this directory's root. Unanchored, a
+# pattern with no slash matches at any depth: a document named README.md in a subdirectory
+# such as archive/ would be silently ignored, and nothing would record that it was never
+# committed. The engine repository's own negations are anchored the same way.
+/README.md
+/.gitignore
+/.gitattributes

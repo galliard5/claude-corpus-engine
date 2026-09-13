@@ -75,8 +75,8 @@ it rarely changes.
 What belongs to one world rather than to one campaign lives with that world, rather than in the
 project profile or in a campaign profile: its **prose register** — period, tone, how the fantastic
 sits inside everyday life, what the prose should and should not reach for — which every campaign
-there shares, and, if you use skill trees, what its transformations do to a character, which applies
-to the campaigns each programme names. Create one at `World_Building/[Setting]/Setting_Profile.md`
+there shares, and, if you use skill trees, what its transformations do to Essence and which
+campaigns a programme covers. Create one at `World_Building/[Setting]/Setting_Profile.md`
 for each setting you run games in.
 
 `Core_Rules/Start_Here.md` loads it when a session starts in that setting: the setting a campaign's
@@ -86,11 +86,13 @@ is what `gm_rules.md` means by a setting's register, and the only place that ins
 | Section | Purpose |
 |---|---|
 | `PROSE REGISTER` | Two or three sentences. It governs how the world is written, not what is true in it |
-| `PROGRESSION` | Optional. What a transformation or binding does to Essence in this setting, then one block per *programme* — the institution or process that performs it. Each block names the campaigns it covers on a `Campaigns:` line, and lists their Essence starting branches. A named campaign runs skill trees without needing a campaign profile; a block with no `Campaigns:` line names none, and turns trees on for no campaign |
+| `PROGRESSION` | Optional. What a transformation or binding does to Essence in this setting — that it initializes, when, what carries over — then one block per *programme*, the institution or process that performs it, naming the campaigns it covers on a `Campaigns:` line. A named campaign runs skill trees without needing a campaign profile; a block with no `Campaigns:` line names none, and turns trees on for no campaign. No branch names: those are discovered in play |
 | `WORLD STATE` | A pointer to the setting's `World_State_Register.md`, where it has one — the record of facts created by play and who knows them |
 
-Programmes, not settings, own the starting branches, because two campaigns in one world can be
-changed by different things. A campaign written differently from the rest of its setting — a darker
+A programme block exists to say which campaigns share a setting's transformation without each
+needing a campaign profile. It never lists Essence branches: two characters through the same change
+grow different trees, named in play (`Game_Systems/Baseline/skill_trees.md` > *ESSENCE ARCHETYPE*).
+A campaign written differently from the rest of its setting — a darker
 key, say — records only that difference, in its campaign profile's *Register adjustment*; it never
 copies the register.
 

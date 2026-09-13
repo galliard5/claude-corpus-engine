@@ -135,11 +135,14 @@ this PC is a genuine blank slate, and what this campaign treats as capability de
 
 > [Notes, or "not applicable".]
 
-**Essence is not recorded here.** What a transformation does to Essence is a fact about the setting,
-and the starting branches are a fact about the programme that performed it — a setting may hold more
-than one programme, and two campaigns run by the same programme should not answer it differently.
-Both live in the setting profile, `World_Building/[Setting]/Setting_Profile.md` > *PROGRESSION*. A
-campaign departing from its programme records the departure here and does not copy the block.
+**Essence branches are not predefined here, and no profile supplies a generic branch list.** What a
+transformation does to Essence — that it initializes, when, and what carries over — is a fact about
+the setting, and lives in the setting profile, `World_Building/[Setting]/Setting_Profile.md` >
+*PROGRESSION*. What any one character's Essence becomes is named from inside their own experience in
+play — `Game_Systems/Baseline/skill_trees.md` holds that two characters through the same change grow
+different trees — so these notes may record, or point to, Essence that play has already established,
+but never a list to start from. A campaign whose transformation departs from its setting's records
+the departure here.
 
 ---
 

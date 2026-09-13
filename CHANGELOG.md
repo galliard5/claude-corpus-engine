@@ -57,8 +57,9 @@ while it stays rare.
 
 - **Setting profiles.** `World_Building/[Setting]/Setting_Profile.md` holds material belonging to
   the setting: the prose register and world-state pointer every campaign there shares, and
-  optionally a `PROGRESSION` section whose programme blocks carry Essence starting branches and turn
-  skill trees on for the campaigns they list. `World_Building_README.md` describes the file.
+  optionally a `PROGRESSION` section recording what the setting's transformations do to Essence,
+  whose programme blocks turn skill trees on for the campaigns they list. Setting profiles prescribe
+  no Essence branch names; a character's branches are named in play. `World_Building_README.md` describes the file.
 - **Campaign profiles can adjust their setting's register** under *Register adjustment*, recording
   only the difference. `skill_trees` in the template is now empty by default, so a copied template
   inherits from the setting instead of switching trees off.

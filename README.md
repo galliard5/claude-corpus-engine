@@ -14,8 +14,8 @@ than what was said, so sessions are archived exactly as they happened: captured 
 rather than reproduced by the model, which cannot be verified.
 
 **This repository ships the engine, not a setting.** You supply the content, in a `World_Building/`
-directory you create, plus a project profile describing where things live. `World_Building_README.md`
-explains both.
+directory you create, plus a project profile describing where things live and a setting profile for
+each world you run. `World_Building_README.md` explains both.
 
 ---
 
@@ -24,7 +24,8 @@ explains both.
 | Directory | Contents |
 |---|---|
 | `Python/` | The index builder, four custom MCP servers (corpus-search, index-tools and series-search in the Docker stack; transcript natively on the host), the transcript capture and cleaning scripts, Docker Compose stack, and a pinned build of the upstream filesystem MCP |
-| `Core_Rules/` | The GM rules layer — narrative rules, scenario extraction protocol, model-selection guidance, and 18 templates |
+| `Core_Rules/` | The GM rules layer — `Start_Here.md` (the entry point and load order), four fixed modules for doctrine, epistemics, presentation and operating procedure, scenario prep and extraction protocols, and 19 templates |
+| `Game_Systems/` | The pluggable rules layer — `Baseline/` (the shipped rules-light system and the skill-tree system), `DnD5e/` (a sample d20 module), `Adaptations/` (how a system stacks on Baseline) and `Reference/` (the measurements behind them). See *Game systems* below |
 | `System_Documentation/` | Reference docs for everything in `Python/`. Start at its `README.md` |
 
 `World_Building/` is **not** in this repository — it is where your content goes, and you create it.
@@ -73,6 +74,45 @@ rebuilds while leaving every container looking healthy.
 
 Full architecture walkthrough: `System_Documentation/Architecture.md`.
 
+## Game systems
+
+The rules that resolve an action — what gets rolled, what a condition does, how a character grows —
+live in `Game_Systems/`, apart from the GM rules in `Core_Rules/` that say how to run a scene. A
+campaign names its system in `Campaign_Profile.md`; a campaign with no profile runs on Baseline.
+`Core_Rules/Start_Here.md` resolves which rules are in force.
+
+- **`Baseline/`** is a complete rules-light system that resolves by judgement and narrative weight,
+  with the Emergent Skill Tree System for campaigns that want tracked growth. It is also the default
+  lower layer beneath a heavier system. What survives there is decided call site by call site in that
+  chain's adaptation profile — kept, extended or replaced — because a module's manifest alone cannot
+  say. In the sample DnD5e chain, nine of the thirteen sites keep something from Baseline: equipment
+  and its wear whole, its conditions partitioned alongside DnD5e's, and lasting injuries beside hit
+  points. Difficulty and progression are replaced outright.
+- **`DnD5e/`** is a sample d20 module built from SRD 5.1 (CC-BY-4.0; attribution in `NOTICE`). It
+  currently implements the 2014 rules only. That is the extent of what has been built, not a lock:
+  a campaign that selects an edition the module does not implement is stopped before play and told
+  why, instead of being run silently on rules it did not ask for.
+- **Any other system can be added.** The interface is designed to be system-neutral, and the DnD5e
+  sample exercises all thirteen of its call sites. With an agent's help you can import a published
+  system from its source material — its mechanics, and any lore or setting it depends on — or build
+  one of your own. A module pins what
+  has to be exact and leaves out what a model reliably knows; an adaptation profile in
+  `Adaptations/` settles how it stacks on Baseline; `Reference/` shows how "reliably knows" was
+  measured rather than assumed. Import only what the material's licence allows.
+
+## Upgrading an existing corpus
+
+Read `CHANGELOG.md` first. Entries that need you to act open with a bold **Breaking — action
+required** line.
+
+**If you are upgrading a corpus you already play in, rather than starting fresh, have an agent do the
+migration** — a coding agent pointed at your checkout and the changelog. Recent changes move
+material between files by scope, and the danger is not a file that fails to load. It is a campaign
+that keeps loading and quietly runs on different rules: a skill-tree record left where nothing reads
+it, a register the GM no longer finds. An agent can check that every campaign resolves the same
+system, skill-tree setting and register before and after the upgrade — a check that is easy to skip
+by hand.
+
 ## What isn't included
 
 Some tooling referenced in the docs lives outside this repository and has to be connected
@@ -85,7 +125,14 @@ absent tool fails in a way that looks like the model misbehaving rather than a s
   on the grounds that a language model asked for a d20 produces a plausible-looking number rather
   than a random one. That server is third-party. The rules include a fallback for running without
   it — the short version is that you disclose it rather than quietly inventing numbers.
-- **Symbolic math.** Optional; nothing here hard-depends on it.
+- **Symbolic math.** Optional; nothing here hard-depends on it, but it earns its place alongside a
+  crunchier system. The arithmetic around a roll has the same weakness as the roll itself: a model
+  produces a plausible modifier or target number rather than a reliably correct one. The rules say
+  what goes into a roll — an attack might be `d20 + Strength modifier + weapon bonus`. A SymPy MCP
+  server (third-party) does the arithmetic on the character's actual numbers, `d20 + (5 + 3)` →
+  `d20 + 8`, and the calculated expression goes to the dice roller. The model never has to guess the
+  modifier, or the form of the roll, in its head. `file_system_instructions.md` covers connecting
+  both.
 - **A browser and two pip packages, for transcript capture.** The transcript server reads a public
   claude.ai share page and needs `playwright` plus a Chromium-family browser already on the host;
   the cleaner needs `markdownify`. Both run on the host rather than in the Docker stack, so neither

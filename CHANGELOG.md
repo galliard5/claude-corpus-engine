@@ -45,6 +45,12 @@ while it stays rare.
 > instead. That file names every rules file a session loads and resolves which game system is in
 > force. Campaigns without a `Campaign_Profile.md` keep running on the shipped defaults, plus
 > anything their setting profile defines for them; nothing needs to be created for them.
+>
+> **Upgrading a corpus you already play in, rather than starting fresh? Have an agent do the
+> migration** — a coding agent pointed at your checkout, this entry and `Start_Here.md`. The risk is
+> not a file that fails to load; it is a campaign that quietly runs different rules, such as a
+> skill-tree record left where nothing reads it any more. Ask the agent to confirm that every
+> campaign resolves the same system, skill-tree setting and register before and after.
 
 > **Breaking — action required:** setting- and programme-scoped material moves out of
 > `World_Building/Project_Profile.md` into `World_Building/[Setting]/Setting_Profile.md`, one file
@@ -59,7 +65,8 @@ while it stays rare.
   the setting: the prose register and world-state pointer every campaign there shares, and
   optionally a `PROGRESSION` section recording what the setting's transformations do to Essence,
   whose programme blocks turn skill trees on for the campaigns they list. Setting profiles prescribe
-  no Essence branch names; a character's branches are named in play. `World_Building_README.md` describes the file.
+  no Essence branch names; a character's branches are named in play. `World_Building_README.md`
+  describes the file.
 - **Campaign profiles can adjust their setting's register** under *Register adjustment*, recording
   only the difference. `skill_trees` in the template is now empty by default, so a copied template
   inherits from the setting instead of switching trees off.
@@ -69,8 +76,15 @@ while it stays rare.
   `scenario_prep.md`. `Start_Here.md` is the single entry point and gives the load order.
 - **Game rules move to `Game_Systems/`.** `Baseline/` holds the shipped rules-light system and the
   Emergent Skill Tree System (`skill_trees.md`, formerly `Core_Rules/Skill_Trees.md`). `DnD5e/` is
-  a sample d20 module that supports SRD 5.1 (2014 rules) only and refuses any other edition; its
-  adaptation profile is in `Adaptations/`.
+  a sample d20 module built from SRD 5.1, and it currently implements the 2014 rules only. That is
+  the extent of what the module covers so far, not a lock on other editions: a campaign that selects
+  one the module does not implement is stopped before play and told why, rather than silently run
+  on 2014 rules it did not ask for. Its adaptation profile is in `Adaptations/`.
+- **Other game systems can be added.** A system module pins what has to be exact and leaves out
+  what a model reliably knows; an adaptation profile settles how it stacks on Baseline. The sample
+  module shows both. Import a published system with an agent's help from its source material — its
+  mechanics, and any lore or setting it depends on, within that material's licence — or build one of
+  your own.
 - **Per-campaign selections** go in `Campaign_Profile.md` in the campaign's directory, copied from
   `Core_Rules/Templates/Campaign_Profile_Template.md`. It selects doctrine and presentation options
   and names the game system chain. It does not restate setting-level material, which lives in the

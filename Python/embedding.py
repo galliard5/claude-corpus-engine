@@ -14,6 +14,15 @@
 #   model's snapshot tree and left a present-but-broken cache: fastembed saw the
 #   metadata, skipped re-download, and ONNX failed with NO_SUCHFILE on any cache-miss
 #   embed. Docker is unaffected (the image sets CORPUS_EMBED_CACHE explicitly).
+#
+# changed 2026-09-20: embed_documents now chunks to CORPUS_EMBED_BATCH_SIZE
+#   (default 256, fastembed's own default) instead of handing the whole corpus
+#   to one model.embed() call. On a memory-constrained host — a phone running
+#   the stack under proot, sharing RAM with the rest of the OS — a single
+#   large-corpus batch sized ONNX's tensors past what was available and the
+#   OOM killer took the process (once) and then the whole app (on retry).
+#   Lowering the env var trades embedding speed for peak memory; the FTS5
+#   lane is unaffected either way.
 """
 Embedding helper for the corpus vector-search lane.
 
@@ -68,6 +77,13 @@ MAX_EMBED_CHARS = 2000
 # (ONNX NO_SUCHFILE on every cache-miss embed). Gitignored; ~90 MB, downloaded
 # once on first host embed.
 _CACHE_DIR = os.environ.get("CORPUS_EMBED_CACHE") or str(Path(__file__).parent / ".fastembed_cache")
+
+# Documents per inference call. fastembed's own default (256) sizes the ONNX
+# session's tensors for the whole batch at once; on a memory-constrained host
+# (a phone under proot, sharing RAM with the rest of the OS) that batch alone
+# can exceed what's available even though the model itself is only ~90MB.
+# Lower via CORPUS_EMBED_BATCH_SIZE rather than editing this file.
+_BATCH_SIZE = int(os.environ.get("CORPUS_EMBED_BATCH_SIZE", "256"))
 
 _model: "TextEmbedding | None" = None
 
@@ -126,10 +142,14 @@ def build_embed_text(
 
 
 def embed_documents(texts: list[str]) -> list[list[float]]:
-    """Batch-embed document texts. Returns one vector per input, order preserved."""
+    """Batch-embed document texts. Returns one vector per input, order preserved.
+
+    Internally chunked to _BATCH_SIZE regardless of how many texts are passed —
+    see _BATCH_SIZE for why.
+    """
     _require()
     model = get_model()
-    return [vec.tolist() for vec in model.embed(texts)]
+    return [vec.tolist() for vec in model.embed(texts, batch_size=_BATCH_SIZE)]
 
 
 def embed_query(text: str) -> list[float]:

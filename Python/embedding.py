@@ -23,6 +23,15 @@
 #   OOM killer took the process (once) and then the whole app (on retry).
 #   Lowering the env var trades embedding speed for peak memory; the FTS5
 #   lane is unaffected either way.
+#
+# changed 2026-09-20: embed_documents also takes an explicit batch_size
+#   argument now, overriding CORPUS_EMBED_BATCH_SIZE for that call.
+#   build_indexes.py uses this to source the value from indexer.cfg's
+#   [embedding] section instead — unlike CORPUS_ROOT / CORPUS_EMBED_CACHE,
+#   nothing outside build_indexes.py ever needs this value (search_mcp_server.py
+#   only ever embeds one query string at a time), so the cfg is the more
+#   discoverable home for it. The env var still works for anyone calling this
+#   module directly.
 """
 Embedding helper for the corpus vector-search lane.
 
@@ -141,15 +150,19 @@ def build_embed_text(
     return text[:MAX_EMBED_CHARS]
 
 
-def embed_documents(texts: list[str]) -> list[list[float]]:
+def embed_documents(texts: list[str], batch_size: int | None = None) -> list[list[float]]:
     """Batch-embed document texts. Returns one vector per input, order preserved.
 
-    Internally chunked to _BATCH_SIZE regardless of how many texts are passed —
-    see _BATCH_SIZE for why.
+    Internally chunked to `batch_size` (falling back to _BATCH_SIZE, i.e.
+    CORPUS_EMBED_BATCH_SIZE / fastembed's own default) regardless of how many
+    texts are passed — see _BATCH_SIZE for why. build_indexes.py passes its own
+    indexer.cfg [embedding] batch_size here rather than relying on the env var,
+    since the cfg is the one place both machine-specific config already lives.
     """
     _require()
     model = get_model()
-    return [vec.tolist() for vec in model.embed(texts, batch_size=_BATCH_SIZE)]
+    size = batch_size if batch_size is not None else _BATCH_SIZE
+    return [vec.tolist() for vec in model.embed(texts, batch_size=size)]
 
 
 def embed_query(text: str) -> list[float]:

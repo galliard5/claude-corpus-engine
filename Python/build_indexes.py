@@ -31,6 +31,15 @@ Replaces: build_directory_indexes.py + build_search_index.py
 #   vector-lane crash), and a failed vector step reports "FAILED" instead of
 #   an innocent-looking "Vectors indexed: 0".
 #
+# changed 2026-09-20: added [embedding] batch_size to indexer.cfg, read by
+#   parse_embedding_settings and threaded through build_search_db ->
+#   _build_vectors -> embedding.embed_documents. Lets a memory-constrained
+#   host (e.g. this stack running under Termux's proot-distro on a phone)
+#   cap how many documents go into one ONNX inference call without an env
+#   var — unlike CORPUS_ROOT / CORPUS_EMBED_CACHE, nothing outside this
+#   script ever needs the value, so the cfg is the more discoverable home
+#   for it than an env var would be.
+#
 # changed 2026-09-08: added a build-history log — one JSON object per build
 #   appended to Python/build_history.jsonl (gitignored). Motivation: every
 #   performance figure in the docs was a hand-measured snapshot with no way to
@@ -204,6 +213,21 @@ def parse_file_types(cfg: dict) -> tuple[str, list[str]]:
     mode     = str(section.get("settings", {}).get("mode", "whitelist")).strip().lower()
     patterns = [p.strip() for p in section.get("patterns", []) if p.strip()]
     return mode, patterns
+
+
+def parse_embedding_settings(cfg: dict) -> int | None:
+    """
+    Parse [embedding] batch_size from cfg.
+
+    Returns None when unset (bare section, missing key, or non-int value) so
+    the caller can fall back to embedding.py's own default (the
+    CORPUS_EMBED_BATCH_SIZE env var, or fastembed's built-in 256) rather than
+    baking a number in here that would silently override a value someone set
+    another way.
+    """
+    settings = cfg.get("embedding", {}).get("settings", {})
+    value = settings.get("batch_size")
+    return value if isinstance(value, int) else None
 
 
 def parse_context_limits(cfg: dict) -> tuple[int, list[tuple[str, object]]]:
@@ -543,7 +567,9 @@ def _ensure_embed_cache(cur) -> None:
         )
 
 
-def _build_vectors(cur, pending_vectors: list) -> tuple[int, int, int]:
+def _build_vectors(
+    cur, pending_vectors: list, batch_size: int | None = None
+) -> tuple[int, int, int]:
     """Populate corpus_vec for this build, reusing cached embeddings.
 
     pending_vectors is a list of (rowid, content_hash, embed_text). Vectors are
@@ -551,6 +577,10 @@ def _build_vectors(cur, pending_vectors: list) -> tuple[int, int, int]:
     hashes not already cached — i.e. new or changed documents. corpus_vec is
     still fully rebuilt (one row per doc, by shared rowid), so rowids stay in
     lockstep with corpus_fts; only the expensive embedding step is skipped.
+
+    batch_size overrides embedding.py's own default for the embed_documents
+    call below — see parse_embedding_settings and indexer.cfg's [embedding]
+    section for why a build might want that.
 
     Returns (vectors_inserted, embeddings_computed, embeddings_reused,
     embeddings_pruned). The middle two count unique content hashes (actual vs
@@ -581,7 +611,9 @@ def _build_vectors(cur, pending_vectors: list) -> tuple[int, int, int]:
     text_by_hash = {h: t for _, h, t in pending_vectors}
     miss_hashes = [h for h in text_by_hash if h not in cached]
     if miss_hashes:
-        vectors = embedding.embed_documents([text_by_hash[h] for h in miss_hashes])
+        vectors = embedding.embed_documents(
+            [text_by_hash[h] for h in miss_hashes], batch_size=batch_size
+        )
         new_rows = []
         for h, vec in zip(miss_hashes, vectors):
             blob = embedding.serialize(vec)
@@ -644,12 +676,13 @@ class SearchStats:
 
 
 def build_search_db(
-    search_files:    list[Path],
-    root:            Path,
-    db_path:         Path,
-    context_default: int,
-    context_limits:  list,
-    build_vectors:   bool = True,
+    search_files:      list[Path],
+    root:              Path,
+    db_path:           Path,
+    context_default:   int,
+    context_limits:    list,
+    build_vectors:     bool = True,
+    embed_batch_size:  int | None = None,
 ) -> SearchStats:
     """
     Drop and rebuild the FTS5 search index from scratch.
@@ -663,6 +696,9 @@ def build_search_db(
     corpus_fts so the two lanes can be fused at query time. Embedding is batched
     after the FTS inserts, reusing cached vectors for unchanged content. If the
     deps are absent, the vector step is skipped and only the FTS index is produced.
+
+    embed_batch_size, from indexer.cfg's [embedding] section, overrides how many
+    documents go into a single embedding call — see parse_embedding_settings.
 
     Returns a SearchStats carrying the counts, the error list, indexed content
     volume, and the FTS / embed phase split.
@@ -789,7 +825,9 @@ def build_search_db(
         embed_start = time.perf_counter()
         try:
             (stats.vec_indexed, stats.vec_embedded,
-             stats.vec_reused, stats.vec_pruned) = _build_vectors(cur, pending_vectors)
+             stats.vec_reused, stats.vec_pruned) = _build_vectors(
+                cur, pending_vectors, batch_size=embed_batch_size
+            )
         except Exception as e:
             # Embedding/vector failure must not lose the FTS index — warn and
             # leave corpus_vec empty so search falls back to FTS cleanly.
@@ -945,6 +983,7 @@ def main() -> int:
     search_excluded                       = parse_search_excluded(cfg)
     file_mode, file_patterns              = parse_file_types(cfg)
     context_default, context_limits       = parse_context_limits(cfg)
+    embed_batch_size                      = parse_embedding_settings(cfg)
 
     db_path = index_dir / DB_FILENAME
     # Sampled before the build, not after — build_search_db creates the file, so
@@ -992,6 +1031,7 @@ def main() -> int:
     stats = build_search_db(
         search_files, root, db_path, context_default, context_limits,
         build_vectors=not args.no_vectors,
+        embed_batch_size=embed_batch_size,
     )
 
     # --- Summary ---

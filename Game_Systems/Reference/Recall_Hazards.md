@@ -12,9 +12,13 @@ RECALL HAZARDS
 topic-shaped, so it does not vary by system — only its *severity* does. A module records its own
 calibration against this document and nothing else.
 
-Measured in `Recall_Tests/Recall_Test_Results.md` (d20, twelve items) and
-`Recall_Tests/Recall_Test_PF2e_Results.md` (Pathfinder 2e, seven items). Predictions in both cases
-were committed before any source was consulted.
+Measured in `Recall_Tests/Recall_Test_Results.md` (d20, twelve items),
+`Recall_Tests/Recall_Test_PF2e_Results.md` (Pathfinder 2e, seven items), and two blind runs of the same
+twenty prompts on Eclipse Phase second edition, one by each of two models. The Eclipse Phase results live
+with that module in its own repository, which is private because the game's licence cannot mix with this
+one's; what is recorded here are the patterns, not the book's content. Predictions were committed before any
+source was consulted in every run but one, whose predictions were frozen by hash before scoring and committed
+afterwards; that run records the deviation itself.
 
 ---
 
@@ -45,6 +49,29 @@ Five categories, in rough order of how often they bit:
 and quietly a clause short. That is worse than being visibly wrong, because nothing in the output
 flags itself as suspect and nothing downstream can tell.
 
+## Two further failure classes
+
+The Eclipse Phase runs added two classes the d20 and Pathfinder tests did not show. Both are
+structure-shaped, so they are expected wherever a system has the structure, not only in the system that
+showed them.
+
+**Scope or case collapse — a real value attached to the wrong case.** The number is genuine and appears in
+the book; it belongs to a narrower case than the one it is applied to. Both models gave the healing rate of
+a body *without* augmentation as the rate for bodies in general, to the same numbers; one then did the same
+with a rest timeframe, choosing the same narrow case again. A weapon's damage was given as its neighbour's.
+This is harder to catch than an invented number, because the value checks out against the book unless the
+case is checked too.
+
+**Invented structure, or a plausible substitution.** A rule, field or mechanism the system does not have,
+supplied confidently — often by carrying in the familiar generic one. Both models invented a
+defender-wins rule for tied contests, and both gave bodies a statistic cap the edition does not have; one
+put that invented field on every body it named. One model paid for a supernatural power in the generic
+stress currency that neighbouring rules use, where the system charges a cost of its own. A GM relying on
+recall here does not misstate a value; it applies a rule that does not exist.
+
+**Two models agreeing on an error is not corroboration.** An error produced independently by both tested
+models is the highest-priority pin. Two one-shot runs establish a shared failure, not an inevitable one.
+
 ---
 
 ## The operating rule, and why it is per-system
@@ -63,6 +90,7 @@ in prose; a statblock is tabular data reproduced verbatim rarely.
 |---|---|
 | DnD5e | **Rule as stated is adequate.** Two monsters and three spells came back exact, including every ability score. Errors were secondary elements only. |
 | Pathfinder 2e | **Rule is not adequate — look the creature up regardless of purpose.** Roughly half a statblock wrong, including a primary damage die and two of three saves, and three of four special abilities absent entirely. Recall is not reliable enough even for description. |
+| Eclipse Phase 2e | **Architecture is broadly reliable; everything tabular, and every setting-specific case or cost, needs a lookup.** Resolution, graded results, both harm tracks and their formulas, death and restoration came back exact or close for both models. No body's full statistic line was right, every weapon and armour number was wrong for at least one model, and the errors above — a narrower case's value, an invented rule or field, a generic cost substituted — all fell on rules whose surrounding architecture was recalled. Uncommon entries need a lookup even for description; the generic ones were usable for reference. |
 
 ## Recording a new system's calibration
 
@@ -75,15 +103,30 @@ The cheap method: commit predictions for a handful of items across the confidenc
 consult sources, then compare. Half an hour, and it produces the calibration line as output rather
 than as guesswork.
 
-## Edition blending — claimed, and not evidenced
+The Eclipse Phase runs reproduced the confidence gap a third time: an invented rule sat inside an answer
+tagged *confident*, and two exact statistic lines came from an answer tagged *low*.
 
-Both tests deliberately probed the hypothesis that editions blend in recall — the 2014/2024 d20
-revision and the Pathfinder Remaster. Both probes were flagged in advance as the likely failure.
-**Both came back substantially right.**
+**Measure the model that will run the game.** The two models tested on Eclipse Phase agreed on three errors
+and differed on most of the rest; each recalled rules the other missed. A calibration measured on one model
+is evidence about the system, but it does not tell a module what a different GM model will get wrong. Pin
+the shared errors first, then the running model's own.
 
-Treat the edition-blending hazard as unevidenced. The `edition:` manifest field earns its place on
-**provenance** grounds — a campaign resumed in two years cannot otherwise tell which ruleset it was
-built against — and not on any claim about recall.
+## Edition leakage — not blending, but a carried-over piece
+
+The d20 and Pathfinder tests deliberately probed the hypothesis that editions blend in recall — the
+2014/2024 d20 revision and the Pathfinder Remaster. Both probes were flagged in advance as the likely
+failure. **Both came back substantially right.**
+
+Eclipse Phase showed the hazard once in each model, in a narrower form. Neither blended the editions: both
+described the structural changes between first and second edition well. What leaked was a single piece —
+one model gave a first-edition armour-penetration mechanic fitted with second-edition-looking numbers, the
+other gave the first edition's list of social networks. That is the case-collapse class again, with an
+edition as the wrong case.
+
+So treat edition *blending* as unevidenced, and edition *leakage* of individual mechanics and lists as real
+where editions differ in them. The `edition:` manifest field still earns its place mainly on **provenance**
+grounds — a campaign resumed in two years cannot otherwise tell which ruleset it was built against — and a
+module whose editions differ in specific pieces should pin those pieces.
 
 ---
 
@@ -93,8 +136,9 @@ built against — and not on any claim about recall.
 material — most subclasses, published adventures, and recent releases generally — was not tested,
 and is where recall would be expected to degrade first.
 
-**Small samples.** Twelve items and seven. Enough to establish the pattern and its direction; not
-enough to quantify a rate.
+**Small samples.** Twelve items, seven, and twenty twice. Enough to establish the pattern and its
+direction; not enough to quantify a rate. Each Eclipse Phase model ran once, so a second cold run could
+differ, most of all on low-confidence items.
 
 **One source per system**, so a systematic error in a source would read here as agreement.
 

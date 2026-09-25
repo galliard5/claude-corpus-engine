@@ -50,6 +50,9 @@ Replaces: build_directory_indexes.py + build_search_index.py
 #   entry_key as its LAST column (so ranking weights and snippet columns are unchanged), and a db_info
 #   row. Dataset records are indexed one row each, full-text only. An ordinary run still builds only
 #   the corpus. Build history schema 2 adds "target".
+# changed 2026-09-25: a dataset's row_refs resolve provenance for records read from table rows, one hop
+#   at build time, into source_json as via_row_refs (source_path stays empty: it is a direct source's
+#   file only). Records are read in full before insertion, since a reference may cross files.
 
 Usage:
     python build_indexes.py                   # reads indexer.cfg, writes all outputs
@@ -962,8 +965,13 @@ def build_system_db(cfg: "system_index.SystemCfg", gen_path: Path, live_db, buil
         for rep in cfg.representations:
             if rep.name != "dataset":
                 continue
-            for rel, dataset, raw, rec in system_index.read_records(cfg, rep):
-                source = rec.get("source")
+            # Read every record first: a row reference may point into any file of the representation.
+            records = list(system_index.read_records(cfg, rep))
+            inherited = system_index.resolve_row_refs(rep, records)
+            for rel, dataset, raw, rec in records:
+                # source_path is only ever a DIRECT source's file; inherited provenance lives in source_json alone,
+                # under via_row_refs, so nothing can mistake a table's lines for the record's own.
+                source = rec["source"] if "source" in rec else inherited.get(rec["id"])
                 content = system_index.project_record(rec, rep.exclude_keys)
                 _insert_row(cur, {
                     "entry_key": f"rec:{dataset}/{rec['id']}", "path": rel, "doc_type": "dataset-record",

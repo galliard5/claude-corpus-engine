@@ -234,6 +234,10 @@ search server; `Search_Server.md` → *Game-system module databases* documents t
   an interrupt (Ctrl-C) landing between the swap and that record cannot delete the generation the registry now
   names. Generations no registry entry names are removed best-effort afterwards; one still held
   open by a reader is left for a later build.
+- **Row references** (`row_refs = a, b` under `[representation dataset]`) give provenance to records read from
+  table rows, which have no source of their own: the build resolves each such record, one hop, to the index
+  record owning the table's lines, and fails if any reference is missing, malformed, dangling, out of span or
+  indirect. See `Search_Server.md` → *Provenance through row references*.
 - **The vector lane stays optional.** A model that cannot run (no cache, no download) publishes the full-text
   database without vectors and says so, as the corpus build does; vector and hybrid searches fall back to
   full-text until a rebuild succeeds.

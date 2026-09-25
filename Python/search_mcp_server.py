@@ -58,6 +58,12 @@ changed 2026-09-24: game-system module databases. search_corpus, get_section
     dataset file yields one row per record. Corpus output is byte-identical to
     schema 1 (Python/test_system_index.py proves it on the same inputs); an
     index still at schema 1 gets a "rebuild" message instead of a SQL error.
+
+changed 2026-09-25: records with no source of their own but row references
+    (see system_index.py) show "Source (via row reference): <file> #<anchors> —
+    row line(s) N  (<index record>)", one line per table on get_system_record and
+    a summary with a "+N more" count on search hits, so inherited provenance is
+    never shown as the record's own.
 """
 
 import datetime
@@ -604,6 +610,35 @@ def _rrf_fuse(fts_rows, vec_pairs, limit, vec_meta):
 # Formatting
 # ---------------------------------------------------------------------------
 
+_VIA = "Source (via row reference): "
+
+
+def _anchor_text(src) -> str:
+    anchors = src.get("anchors") if isinstance(src, dict) else None
+    return " #" + ", #".join(str(v) for v in anchors.values()) if isinstance(anchors, dict) and anchors else ""
+
+
+def _row_text(rows) -> str:
+    """'row line 7' or 'row lines 6–7, 9': sorted lines, consecutive runs compacted."""
+    runs = []
+    for n in rows:
+        if runs and n == runs[-1][1] + 1:
+            runs[-1][1] = n
+        else:
+            runs.append([n, n])
+    text = ", ".join(str(a) if a == b else f"{a}–{b}" for a, b in runs)
+    return f"row line{'s' if len(rows) > 1 else ''} {text}"
+
+
+def _inherited(source_json):
+    """The via_row_refs list of a record whose provenance is inherited from table rows, else None."""
+    try:
+        src = json.loads(source_json or "null")
+    except ValueError:
+        return None
+    via = src.get("via_row_refs") if isinstance(src, dict) else None
+    return via if isinstance(via, list) and via else None
+
 def _format_results(query, header_suffix, scored_rows, score_label, manifests=None, system=None):
     """Render scored result rows into the text block returned to the client.
 
@@ -624,7 +659,13 @@ def _format_results(query, header_suffix, scored_rows, score_label, manifests=No
         lines.append(f"{i}. [{score_label}: {score:.2f}] {row['path']}")
         if system and row.get("representation"):
             lines.append(f"   Entry: {row['entry_key']}  [{system} · {row['representation']} · {row['authority']}]")
-            if row.get("source_path") or row.get("source_json"):
+            via = _inherited(row.get("source_json"))
+            if via:
+                first, more = via[0], len(via) - 1
+                extra = f" (+{more} more table{'s' if more > 1 else ''})" if more else ""
+                lines.append(f"   {_VIA}{first['source'].get('file', '?')}{_anchor_text(first['source'])} — "
+                             f"{_row_text(first['rows'])}{extra}")
+            elif row.get("source_path") or row.get("source_json"):
                 anchors = ""
                 try:
                     src = json.loads(row.get("source_json") or "null")
@@ -1124,11 +1165,17 @@ def get_system_record(system: str, entry_key: str | None = None, dataset: str | 
         record = json.dumps(json.loads(row["payload"]), indent=2, ensure_ascii=False)
     except ValueError:
         record = row["payload"]
-    source = row["source_json"] or "(none recorded)"
+    via = _inherited(row["source_json"])
+    if via:
+        provenance = "\n".join(
+            f"{_VIA}{t['source'].get('file', '?')}{_anchor_text(t['source'])} — {_row_text(t['rows'])}  "
+            f"({t['index']})  {json.dumps(t['source'], ensure_ascii=False)}" for t in via)
+    else:
+        provenance = f"Source: {row['source_path'] or '?'}  {row['source_json'] or '(none recorded)'}"
     return (
         f"{row['entry_key']}  [{system} · dataset {row['dataset']} · {row['record_kind'] or 'record'} · "
         f"{row['authority']}]\n"
-        f"Source: {row['source_path'] or '?'}  {source}\n"
+        f"{provenance}\n"
         f"{'-' * 60}\n"
         f"{record}\n"
     )

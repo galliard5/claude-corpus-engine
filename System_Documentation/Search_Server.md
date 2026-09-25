@@ -49,7 +49,7 @@ corpus output byte-identical to schema 1 on the same inputs.
 | representation          | TEXT      | Module databases only: `verbatim` / `compact` / `dataset`; `''` in the corpus |
 | authority               | TEXT      | Module databases only: `source` / `derived`         |
 | dataset, record_id, record_kind | TEXT | Dataset rows: the declared dataset, the record's id and `kind` |
-| source_path, source_json | TEXT     | Dataset rows: the record's `source.file`, and its whole `source` object (all anchors) |
+| source_path, source_json | TEXT     | Dataset rows: the record's `source.file`, and its whole `source` object (all anchors). A record whose provenance is inherited through row references has an empty `source_path` and `source_json` = `{"via_row_refs": [{"index", "rows", "source"}]}` |
 | payload                 | TEXT      | Dataset rows: the record's raw JSON line, returned whole by `get_system_record` |
 
 The frontmatter flags are only populated for `.md` files. **Schema 2** (2026-09-24) keyed the table by `entry_key`
@@ -222,6 +222,18 @@ include that matches nothing fails the build, so a typo cannot silently drop a r
 every record carries `id`, `name` and `dataset`; one file is one dataset; ids are unique across the module. The
 searchable text of a record is a deterministic, field-labelled projection of every key except the module's
 declared `exclude_keys` (provenance and structural pointers); the raw JSON is kept whole for exact fetch.
+
+**Provenance through row references.** A record read from one row of a table often has no source of its own: the
+table's lines belong to an index record, and the row record only points at it. A module declares the fields that
+hold those pointers with `row_refs` (dataset only); each is a list of `{index: <record id>, line: <int>}`, extra
+keys allowed. They are read **only on a record with no `source`**, because the same names can mean something else
+on a sourced record (an index record's own table rows), and a direct source always governs. The build resolves
+them one hop — every reference must reach a record with a direct source, never another inherited one — and fails
+on a source-less record with no reference or more than one reference field, a malformed or dangling reference, a
+line outside the table's span, or a declared field no record uses. `get_system_record` then prints one
+`Source (via row reference): <file> #<anchors> — row line(s) N  (<index record>)` line per table, with the table's
+whole source; a search hit prints the first table and a `(+N more table)` count. Inherited provenance is never
+shown as a record's own source, and never stored in `source_path`.
 
 **Why datasets have no vectors.** Flattened JSON is poor embedding text, and large families of near-identical rows
 would crowd the prose neighbours a semantic search is for. `mode="vector"` restricted to datasets says so

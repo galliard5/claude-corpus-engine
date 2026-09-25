@@ -40,6 +40,11 @@ WHAT IT CHECKS
                a symlink escaping it (where the OS allows one), overlap in both directions, an unknown
                representation, a module id not matching the manifest, an output key, a malformed line, an include
                matching no file — plus the record contract: a record with no id, and a duplicate id.
+  Row refs     a source-less record resolves one hop to the table owning its lines; a directly sourced record
+               keeps its own source even when it carries a same-named field (a dangling one included); every
+               malformed, dangling, indirect or out-of-span reference, a second or missing reference field, and
+               a declared field nothing uses fail the build; the record shows every table, grouped with rows
+               compacted, a hit shows the first and a "+N more" count; nothing is stored as a direct source_path.
   Publication  a failed build leaves the registry byte-identical and no unpublished generation; a registry that
                cannot be replaced fails cleanly; a reader already open keeps querying the old generation after a
                new one is published; two modules built concurrently both land in the registry; a module with a
@@ -147,9 +152,33 @@ RECORDS = [
 ]
 OTHER_RECORDS = [{"id": "gizmo/one", "dataset": "gizmos", "kind": "item", "name": "Gizmo"}]
 EXCLUDE = "layer, source, source_notes, context, index_rows, preambles"
+# Row references: a record read from a table row carries no source of its own, only references to the index record
+# that owns the table's lines. The field names are overloaded, as in the first real module: index records carry
+# their own table `rows` (no index key), and a directly sourced record may carry `index_rows` too. Neither is a
+# reference, because a record with a direct source is never read for row references.
+ROW_REFS = "index_rows, contents, rows"
+TABLE_RECORDS = [
+    {"id": "index/table-one", "dataset": "tables", "kind": "index", "name": "Table One",
+     "source": {"file": "01-rules.md", "anchors": {"section": "resolution"}, "line_start": 5, "line_end": 9},
+     "rows": [{"cells": {"name": "Gamma"}}]},
+    {"id": "index/table-two", "dataset": "tables", "kind": "index", "name": "Table Two",
+     "source": {"file": "sub/02-more.md", "anchors": {"section": "harm", "table": "harm-1"},
+                "line_start": 20, "line_end": 24}},
+    {"id": "item/delta", "dataset": "tables", "kind": "item", "name": "Delta",
+     "source": {"file": "01-rules.md", "anchors": {"start": "harm"}},
+     "index_rows": [{"index": "index/nowhere", "line": 99}]},
+    {"id": "item/gamma", "dataset": "tables", "kind": "item", "name": "Gamma", "fields": {"cost": 2},
+     "index_rows": [{"index": "index/table-one", "line": 7, "cells": {"name": "Gamma"}}]},
+    {"id": "pack/kit", "dataset": "tables", "kind": "pack", "name": "Kit",
+     "contents": [{"index": "index/table-one", "line": 6, "ref": "item/gamma"}, {"index": "index/table-one", "line": 7},
+                  {"index": "index/table-one", "line": 9}, {"index": "index/table-two", "line": 21}]},
+    {"id": "roll-table/omen", "dataset": "tables", "kind": "roll-table", "name": "Omen",
+     "rows": [{"index": "index/table-two", "line": 22, "column": 1, "low": 1, "high": 1}]},
+]
 
 
-def index_cfg(module):
+def index_cfg(module, row_refs=None):
+    refs = f"row_refs = {row_refs}\n" if row_refs else ""
     return f"""[system]
 module = {module}
 
@@ -168,10 +197,10 @@ path = data
 authority = derived
 include = *.jsonl
 exclude_keys = {EXCLUDE}
-"""
+{refs}"""
 
 
-INDEX_CFG = index_cfg(MODULE)
+INDEX_CFG = index_cfg(MODULE, ROW_REFS)
 LORE = """---
 name: Lore Note
 type: note
@@ -223,6 +252,12 @@ CFG_PLANTS = [
     ("an output key", f"module = {MODULE}\n", f"module = {MODULE}\noutput = /tmp/x.db\n", "unknown key 'output'"),
     ("a malformed line", "include = *.jsonl\n", "include = *.jsonl\nthis is not a setting\n", "malformed"),
     ("an include that matches no file", "include = *.jsonl", "include = *.xyz", "matches no file"),
+    ("a row_refs field no source-less record uses", f"row_refs = {ROW_REFS}", f"row_refs = {ROW_REFS}, parts",
+     "'parts'"),
+    ("a row_refs field listed twice", f"row_refs = {ROW_REFS}", f"row_refs = index_rows, {ROW_REFS}", "twice"),
+    ("an empty row_refs", f"row_refs = {ROW_REFS}", "row_refs = ", "row_refs"),
+    ("row_refs outside the dataset representation", "include = *.md\n\n[representation compact]",
+     f"include = *.md\nrow_refs = {ROW_REFS}\n\n[representation compact]", "unknown key 'row_refs'"),
 ]
 
 RESULTS = []
@@ -263,25 +298,30 @@ def copy_code(dest, source="working"):
     return dest
 
 
-def make_module(root, dirname, module, records, full=True):
+def make_module(root, dirname, module, records, full=True, row_refs=None):
     mod = root / "Game_Systems" / dirname
     write(mod / f"{module}.md", manifest(module))
     write(mod / "source" / "srd" / "01-rules.md", VERBATIM)
     write(mod / "source" / "srd" / "sub" / "02-more.md", VERBATIM.replace("# Rules", "# More rules"))
     if full:
         write(mod / "rules" / "compact" / "01-rules.md", COMPACT)
-        write(mod / "index.cfg", index_cfg(module))
+        write(mod / "index.cfg", index_cfg(module, row_refs))
     else:
-        write(mod / "index.cfg", index_cfg(module).replace(
+        write(mod / "index.cfg", index_cfg(module, row_refs).replace(
             "[representation compact]\npath = rules/compact\nauthority = derived\ninclude = *.md\n\n", ""))
-    write(mod / "data" / f"{records[0]['dataset']}.jsonl", "".join(json.dumps(r) + "\n" for r in records))
+    by_dataset = {}
+    for r in records:
+        by_dataset.setdefault(r["dataset"], []).append(r)
+    for dataset, recs in by_dataset.items():
+        write(mod / "data" / f"{dataset}.jsonl", "".join(json.dumps(r) + "\n" for r in recs))
     return mod
 
 
 def make_fixture(root):
     write(root / "World" / "Lore_Note.md", LORE)
+    # Othersys declares no row_refs, so its source-less record is simply unsourced, as before row references.
     make_module(root, "Othersys", OTHER, OTHER_RECORDS, full=False)
-    return make_module(root, "Testsys", MODULE, RECORDS)
+    return make_module(root, "Testsys", MODULE, RECORDS + TABLE_RECORDS, row_refs=ROW_REFS)
 
 
 # Embedding environments. The real model cache beside this script makes the positive vector checks independent
@@ -451,7 +491,7 @@ def test_build(code, root):
           and info[0].get("cfg_sha256") == entry.get("cfg_sha256") == cfg_hash,
           "db_info, the registry and the generation file agree on module, build id, schema and index.cfg hash",
           (info, entry))
-    check(entry.get("counts") == {"verbatim": 2, "compact": 1, "dataset": 2},
+    check(entry.get("counts") == {"verbatim": 2, "compact": 1, "dataset": 2 + len(TABLE_RECORDS)},
           "the registry records counts per representation", entry.get("counts"))
 
     fp = entry.get("source_fingerprint")
@@ -588,6 +628,87 @@ def test_strict_cfg(code, root, mod):
     write(extras, json.dumps(dict(RECORDS[1], id="thing/epsilon")) + "\n")
     expect_failure("a second file declaring the same dataset", "also declared")
     extras.unlink()
+
+
+def test_row_refs(code, root, mod):
+    section("Row references (provenance for records read from table rows)")
+    if precondition(root, "the row-reference checks") is None:
+        return
+    reg_before, gens_before = sha(systems_dir(root) / "registry.json"), generations(root)
+    data = mod / "data" / "tables.jsonl"
+    good = data.read_text(encoding="utf-8")
+    ok = {"index": "index/table-one", "line": 6}
+
+    def plant(rid, **fields):
+        return good + json.dumps({"id": rid, "dataset": "tables", "kind": "item", "name": "Planted", **fields}) + "\n"
+
+    for label, bad, needle in (
+            ("a source-less record with two row-reference fields",
+             plant("item/p1", index_rows=[ok], rows=[ok]), "exactly one"),
+            ("a source-less record with no row reference", plant("item/p2"), "no row reference"),
+            ("an empty row-reference list", plant("item/p3", index_rows=[]), "non-empty list"),
+            ("a row reference that is not an object",
+             plant("item/p4", index_rows=["index/table-one"]), "must be an object"),
+            ("a row reference with no index", plant("item/p5", index_rows=[{"line": 6}]), "has no index"),
+            ("a row reference whose line is a boolean",
+             plant("item/p6", index_rows=[{"index": "index/table-one", "line": True}]), "has no integer line"),
+            ("a row reference to a record the module does not have",
+             plant("item/p7", index_rows=[{"index": "index/nowhere", "line": 6}]), "does not resolve"),
+            ("a row reference to a record with no direct source (no second hop)",
+             plant("item/p8", index_rows=[{"index": "item/gamma", "line": 6}]), "no direct source"),
+            ("a row line outside the referenced table's span",
+             plant("item/p9", index_rows=[{"index": "index/table-one", "line": 12}]), "outside")):
+        write(data, bad)
+        rc, out = run(code, ["--system", MODULE, "--no-vectors"], root)
+        check(rc != 0 and needle in out, f"{label} fails the build", out)
+        check(sha(systems_dir(root) / "registry.json") == reg_before and generations(root) == gens_before,
+              "… leaving the registry byte-identical and no new generation")
+    write(data, good)
+
+    meta = {m.get("record_id"): m for m in db_rows(live_db(root))[0]}
+    stored = json.loads((meta.get("pack/kit") or {}).get("source_json") or "null")
+    check((meta.get("pack/kit") or {}).get("source_path") == "" and stored == {"via_row_refs": [
+              {"index": "index/table-one", "rows": [6, 7, 9], "source": TABLE_RECORDS[0]["source"]},
+              {"index": "index/table-two", "rows": [21], "source": TABLE_RECORDS[1]["source"]}]},
+          "inherited provenance is stored whole, per table in reference order, and never as a direct source_path",
+          meta.get("pack/kit"))
+    check(json.loads((meta.get("item/delta") or {}).get("source_json") or "null") == TABLE_RECORDS[2]["source"],
+          "a directly sourced record stores exactly its own source", meta.get("item/delta"))
+
+    rc, out = run(code, ["--system", OTHER, "--no-vectors"], root)
+    check(rc == 0, "the module without row_refs builds", out)
+    calls = [
+        ("get_system_record", {"system": MODULE, "entry_key": "rec:tables/item/gamma"}),
+        ("get_system_record", {"system": MODULE, "entry_key": "rec:tables/pack/kit"}),
+        ("get_system_record", {"system": MODULE, "entry_key": "rec:tables/roll-table/omen"}),
+        ("get_system_record", {"system": MODULE, "entry_key": "rec:tables/item/delta"}),
+        ("get_system_record", {"system": MODULE, "entry_key": "rec:tables/index/table-one"}),
+        ("get_system_record", {"system": OTHER, "entry_key": "rec:gizmos/gizmo/one"}),
+        ("search_corpus", {"query": "Kit", "system": MODULE, "representation_filter": "dataset"}),
+        ("search_corpus", {"query": "Gamma", "system": MODULE, "representation_filter": "dataset"}),
+    ]
+    gamma, kit, omen, delta, table, gizmo, kit_hit, gamma_hit = server_calls(code, root, calls)
+    via = "Source (via row reference): "
+    check(f"{via}01-rules.md #resolution — row line 7  (index/table-one)" in gamma and '"line_start": 5' in gamma
+          and "(none recorded)" not in gamma,
+          "a record read from a table row shows the table's whole source and its row line, marked as inherited", gamma)
+    check(f"{via}01-rules.md #resolution — row lines 6–7, 9  (index/table-one)" in kit
+          and f"{via}sub/02-more.md #harm, #harm-1 — row line 21  (index/table-two)" in kit,
+          "references are grouped by table, their row lines compacted, and every table named", kit)
+    check(f"{via}sub/02-more.md #harm, #harm-1 — row line 22" in omen,
+          "a `rows` reference resolves like the others", omen)
+    check("Source: 01-rules.md" in delta and "via row reference" not in delta,
+          "a record with its own source keeps it, and its index_rows (even a dangling one) are not read", delta)
+    check("Source: 01-rules.md" in table and "via row reference" not in table,
+          "an index record's own table rows are not read as references", table)
+    check("(none recorded)" in gizmo and "via row reference" not in gizmo,
+          "a module without row_refs leaves a source-less record unsourced, as before", gizmo)
+    check(f"{via}01-rules.md #resolution — row lines 6–7, 9 (+1 more table)" in kit_hit,
+          "a search hit summarises the first table and says more exist", kit_hit)
+    # Scoped to Gamma's own hit: the same search also finds Kit, whose summary rightly says more exist.
+    gamma_block = next((b for b in gamma_hit.split("\n\n") if "rec:tables/item/gamma" in b), "")
+    check(f"{via}01-rules.md #resolution — row line 7" in gamma_block and "more table" not in gamma_block,
+          "a search hit with one table claims no more", gamma_hit)
 
 
 def test_publication(code, root, mod):
@@ -999,6 +1120,7 @@ def main():
         test_build(code, root)
         test_projection(code, root)
         test_strict_cfg(code, root, mod)
+        test_row_refs(code, root, mod)
         test_publication(code, root, mod)
         test_vectors(code, root)
         test_server(code, root)

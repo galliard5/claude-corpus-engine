@@ -57,6 +57,10 @@ while it stays rare.
   an item — with its source, so a statistic is never read out of a search snippet.
 - **`index-tools:rebuild_indexes` takes `system`** to rebuild one module's database from chat.
 - `index_status(system=...)` reports whether a module's sources have changed since its database was built.
+- **Records read from a table row show the table's source.** A module's `index.cfg` can declare `row_refs`, the
+  record fields that point a row-derived record at the table that owns its lines. `get_system_record` and search
+  hits then print `Source (via row reference)` with the table's file, anchors and row line, instead of
+  "none recorded". Takes effect after rebuilding the `corpus-search` image and the module's database.
 
 ---
 

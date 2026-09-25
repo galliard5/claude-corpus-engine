@@ -15,6 +15,7 @@ A game-system module declares what to index in a strict index.cfg at its own roo
     authority = source                    # source | derived
     include = *.md                        # comma list of filename globs; each must match a file
     exclude_keys = a, b                   # dataset only: record keys left out of the search text
+    row_refs = a, b                       # dataset only: fields holding row references (see below)
 
 Publication is by immutable generation: each build writes index/systems/<module>.<build_id>.db, and
 index/systems/registry.json — replaced atomically, under a lock — is the single pointer to the live generation. A
@@ -24,7 +25,19 @@ Record contract for dataset (JSONL) files: every record is a JSON object with no
 `dataset`; every record in a file declares the same dataset, and no two files declare the same one; ids are unique
 across the module; `kind` and `source` (an object with `file` and `anchors`) are optional.
 
+Row references. A record read from one row of a table often has no source of its own: the table's lines belong to
+an index record, and the row record only points at it. `row_refs` names the fields that hold those pointers — lists
+of objects with a string `index` (a record id in this module) and an integer `line`, extra keys allowed. They are
+read ONLY on a record with no `source`: the same field names can mean something else on a sourced record (an index
+record's own table rows), so a record with a direct source always keeps it. With row_refs declared, every
+source-less record must carry exactly one of the fields, non-empty; every reference must resolve to a record that
+has a direct source (one hop, never inherited through another source-less record); and a line must fall inside
+that source's line_start..line_end when it has them. The resolved provenance is stored as
+{"via_row_refs": [{"index", "rows", "source"}]}, one entry per table in first-reference order, and is displayed as
+inherited, never as the record's own.
+
 # changed 2026-09-24: created (Eclipse Phase import, phase 7 — per-module search).
+# changed 2026-09-25: row_refs — provenance for records read from table rows, resolved one hop at build time.
 """
 
 import fnmatch
@@ -68,6 +81,7 @@ class Representation:
     authority: str
     include: list
     exclude_keys: tuple = ()
+    row_refs: tuple = ()
     files: list = field(default_factory=list)   # sorted absolute paths, filled by collect()
 
 
@@ -150,7 +164,7 @@ def load_system_cfg(cfg_path) -> SystemCfg:
             problems.append(f"unknown representation '{name}' (known: {', '.join(REPRESENTATIONS)})")
             continue
         settings = {k: str(v).strip() for k, v in body["settings"].items()}
-        allowed = {"path", "authority", "include"} | ({"exclude_keys"} if name == "dataset" else set())
+        allowed = {"path", "authority", "include"} | ({"exclude_keys", "row_refs"} if name == "dataset" else set())
         problems += [f"unknown key '{k}' in [{section}]" for k in sorted(set(settings) - allowed)]
         missing = [k for k in ("path", "authority", "include") if not settings.get(k)]
         problems += [f"missing required key '{k}' in [{section}]" for k in missing]
@@ -169,7 +183,12 @@ def load_system_cfg(cfg_path) -> SystemCfg:
             continue
         include = [p.strip() for p in settings["include"].split(",") if p.strip()]
         exclude = tuple(k.strip() for k in settings.get("exclude_keys", "").split(",") if k.strip())
-        reps.append(Representation(name, rel, target.resolve(), settings["authority"], include, exclude))
+        row_refs = tuple(k.strip() for k in settings.get("row_refs", "").split(",") if k.strip())
+        if "row_refs" in settings and not row_refs:
+            problems.append(f"[{section}] row_refs is empty")
+        problems += [f"[{section}] row_refs lists {k!r} twice" for k in sorted({k for k in row_refs
+                                                                               if row_refs.count(k) > 1})]
+        reps.append(Representation(name, rel, target.resolve(), settings["authority"], include, exclude, row_refs))
     if not reps and "system" in cfg:
         problems.append("no [representation ...] section")
     for i, a in enumerate(reps):
@@ -343,6 +362,64 @@ def read_records(cfg: SystemCfg, rep: Representation):
                     raise SystemIndexError(f"{where}: duplicate record id {rid!r} (first at {seen[rid]})")
                 seen[rid] = where
                 yield rel, dataset, raw, rec
+
+
+def resolve_row_refs(rep: Representation, records: list) -> dict:
+    """Provenance for source-less records, by id: {"via_row_refs": [{"index", "rows", "source"}]}, one entry per
+    referenced table in first-reference order, rows sorted. records is every (relpath, dataset, raw, record) of
+    the representation, since a reference may point into any of its files. Raises SystemIndexError naming every
+    problem (up to five) — see the module docstring for the rules. Without row_refs, returns {}."""
+    if not rep.row_refs:
+        return {}
+    by_id = {rec["id"]: rec for _, _, _, rec in records}
+    resolved, used, problems = {}, set(), []
+    for rel, _, _, rec in records:
+        if "source" in rec:
+            continue                      # a direct source governs; same-named fields are not references here
+        where = f"{rel}: record {rec['id']!r}"
+        present = [f for f in rep.row_refs if f in rec]
+        used.update(present)
+        if not present:
+            problems.append(f"{where} has no source and no row reference ({', '.join(rep.row_refs)})")
+            continue
+        if len(present) > 1:
+            problems.append(f"{where} has no source and {', '.join(present)}; it must have exactly one")
+            continue
+        field_name, refs = present[0], rec[present[0]]
+        if not isinstance(refs, list) or not refs:
+            problems.append(f"{where}: {field_name} must be a non-empty list of row references")
+            continue
+        tables, bad = {}, None
+        for n, ref in enumerate(refs):
+            at = f"{where}: {field_name}[{n}]"
+            if not isinstance(ref, dict):
+                bad = f"{at} must be an object with index and line"
+            elif not isinstance(ref.get("index"), str) or not ref["index"].strip():
+                bad = f"{at} has no index (the id of the record that owns the table)"
+            elif isinstance(ref.get("line"), bool) or not isinstance(ref.get("line"), int):
+                bad = f"{at} has no integer line"
+            elif ref["index"] not in by_id:
+                bad = f"{at}: index {ref['index']!r} does not resolve to a record in this module"
+            elif not isinstance(by_id[ref["index"]].get("source"), dict):
+                bad = f"{at}: {ref['index']!r} has no direct source (row references are one hop, never inherited)"
+            else:
+                src = by_id[ref["index"]]["source"]
+                lo, hi = src.get("line_start"), src.get("line_end")
+                if isinstance(lo, int) and isinstance(hi, int) and not lo <= ref["line"] <= hi:
+                    bad = f"{at}: line {ref['line']} is outside {ref['index']!r}'s lines {lo}-{hi}"
+            if bad:
+                break
+            tables.setdefault(ref["index"], set()).add(ref["line"])
+        if bad:
+            problems.append(bad)
+            continue
+        resolved[rec["id"]] = {"via_row_refs": [{"index": i, "rows": sorted(lines), "source": by_id[i]["source"]}
+                                                for i, lines in tables.items()]}
+    problems += [f"row_refs field {f!r} is used by no source-less record" for f in rep.row_refs if f not in used]
+    if problems:
+        more = f"; and {len(problems) - 5} more" if len(problems) > 5 else ""
+        raise SystemIndexError("row references: " + "; ".join(problems[:5]) + more)
+    return resolved
 
 
 # ---------------------------------------------------------------------------

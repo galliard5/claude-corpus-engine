@@ -43,7 +43,7 @@ TOOL SCHEMA REFERENCE
 
 > **Greppable convention — do not break.** Each tool is a `` ### `server:tool_name` `` header followed by a fenced block whose first line is `params:`; each parameter is one line, `name: type (required)` for required or `name?: type` for optional. Prose stays outside the fenced block. The schema-drift linter (`Python/check_schema_drift.py`) parses tool names + params from these blocks and ignores all prose — keep the form exact when adding or editing tools, or the linter silently under-reports. Run it after any tool-surface change; it is what verified the snapshot date above.
 
-Complete schemas for all 14 filesystem + 4 corpus-search + 1 index-tools + 3 series-search tools = 22 total, captured by direct introspection via `tool_search`.
+Complete schemas for all 14 filesystem + 4 corpus-search + 1 index-tools + 3 series-search + 1 transcript tools = 23 total, captured by direct introspection via `tool_search`.
 
 ## Filesystem Read Tools (4)
 

@@ -38,7 +38,7 @@ being broken rather than a server being absent.
 
 ## Ships with this repository
 
-**Corpus Search Tools (3):** corpus-search:search_corpus, corpus-search:get_section, corpus-search:index_status (see CORPUS SEARCH below)
+**Corpus Search Tools (4):** corpus-search:search_corpus, corpus-search:get_section, corpus-search:get_system_record, corpus-search:index_status (see CORPUS SEARCH below)
 
 **Index Tools (1):** index-tools:rebuild_indexes (see INDEX REBUILD below)
 
@@ -132,8 +132,8 @@ STARTUP PROCEDURES — EXECUTE ON EVERY CONVERSATION START
 ## STEP 1: PROJECT ROOT & TOP-LEVEL STRUCTURE + DEFERRED TOOL LOAD
 
 **[FIRST] Preload all MCP tools (prevents deferred-tool load errors on first calls):**
-Call `tool_search("filesystem read write edit corpus index series search sympy math dice roll")` immediately at session start.
-This loads all 14 filesystem tools, 3 corpus-search tools, 1 index-tools tool, 3 series-search tools, the sympy math tools, and the 4 dice-roller tools into the registry so they're ready for immediate use. Zero cost after first call; eliminates the red parameter-error on initial tool invocations.
+Call `tool_search("filesystem read write edit corpus index series search record sympy math dice roll")` immediately at session start.
+This loads all 14 filesystem tools, 4 corpus-search tools, 1 index-tools tool, 3 series-search tools, the sympy math tools, and the 4 dice-roller tools into the registry so they're ready for immediate use. Zero cost after first call; eliminates the red parameter-error on initial tool invocations.
 
 **Root:** `/corpus` (Docker container path) — ALL MCP file operations confined here. No exceptions.
 **Host path:** `D:\claude\filesystem\` — use this for git, CMD, and native Windows tools.
@@ -260,11 +260,14 @@ Total runtime: ~0.6 seconds. The bat file `Python/refresh_indexes.bat` is the ma
 
 ## STEP 5: CORPUS SEARCH
 
-A custom MCP server (`Python/search_mcp_server.py`) exposes ranked search over the corpus: full-text (SQLite FTS5) plus an optional **semantic vector lane** (sqlite-vec embeddings), selectable/fusible via the `mode` parameter. Three tools:
+A custom MCP server (`Python/search_mcp_server.py`) exposes ranked search over the corpus: full-text (SQLite FTS5) plus an optional **semantic vector lane** (sqlite-vec embeddings), selectable/fusible via the `mode` parameter. Four tools:
 
-- **`corpus-search:search_corpus(query, limit=10, mode="fts", category_filter=None, type_filter=None, missing_filter=None, show_sections=True)`** — ranked search across name, keywords, description, category, and content. Returns ranked paths with snippets showing matched context. Higher scores = better matches. `mode` picks the retrieval lane (see below); the three filters compose with AND. `limit` (default 10) is capped at 200 — a larger value returns a diagnostic error, not results (a runaway-call backstop you'll never hit in normal use). `show_sections` adds the `Sections:` line described below. (Full filter docs: `System_Documentation/Search_Server.md`.)
-- **`corpus-search:get_section(path, heading=None, level=2)`** — returns one `##` section of an indexed document instead of the whole file. Omit `heading` to list a document's sections and their sizes first. Heading matching is forgiving: case, spacing, and dash style are normalized, and a unique prefix or substring is enough.
-- **`corpus-search:index_status()`** — Returns file count, vector-lane availability, and last-built timestamp, plus what the last build cost (runtime, cold or cache-warm, recent median). Use to check freshness before relying on results, and to know whether a rebuild is cheap before asking for one.
+- **`corpus-search:search_corpus(query, limit=10, mode="fts", category_filter=None, type_filter=None, missing_filter=None, show_sections=True, system=None, representation_filter=None)`** — ranked search across name, keywords, description, category, and content. Returns ranked paths with snippets showing matched context. Higher scores = better matches. `mode` picks the retrieval lane (see below); the three filters compose with AND. `limit` (default 10) is capped at 200 — a larger value returns a diagnostic error, not results (a runaway-call backstop you'll never hit in normal use). `show_sections` adds the `Sections:` line described below. (Full filter docs: `System_Documentation/Search_Server.md`.)
+- **`corpus-search:get_section(path, heading=None, level=2, system=None)`** — returns one `##` section of an indexed document instead of the whole file. Omit `heading` to list a document's sections and their sizes first. Heading matching is forgiving: case, spacing, and dash style are normalized, and a unique prefix or substring is enough.
+- **`corpus-search:get_system_record(system, entry_key=None, dataset=None, record_id=None)`** — one whole structured record from a game-system module's datasets, with its source. Exactly one selector: `entry_key` from a search hit, or `dataset` + `record_id`.
+- **`corpus-search:index_status(system=None)`** — Returns file count, vector-lane availability, and last-built timestamp, plus what the last build cost (runtime, cold or cache-warm, recent median), and the registered module databases. Use to check freshness before relying on results, and to know whether a rebuild is cheap before asking for one. With `system`, reports that module's build and whether its sources have changed since.
+
+**Game-system rules have their own databases.** A module with an `index.cfg` (e.g. `eclipsephase`) is searched with `system="<module>"`, never mixed into lore results. Every hit says its **representation**: `verbatim` (the source text — authoritative), `compact` (condensed rules — where they disagree, verbatim wins) or `dataset` (a structured record). For any statistic, fetch the record whole with `get_system_record`; never answer a stat from a `Match:` line or from memory.
 
 **Reading one section instead of a whole file.** Hits on documents over ~3k tokens carry a `Sections:` line listing each `##` section and its rough token cost:
 
@@ -542,10 +545,11 @@ Process: Read → identify exact target text → edit with verified string.
 - `filesystem:directory_tree` — `path`, `excludePatterns?`
 - `filesystem:search_files` — `path`, `pattern`, `excludePatterns?`
 - `filesystem:list_allowed_directories` — no params
-- `corpus-search:search_corpus` — `query`, `limit?`, `mode?`, `category_filter?`, `type_filter?`, `missing_filter?`, `show_sections?`
-- `corpus-search:get_section` — `path`, `heading?`, `level?`
-- `corpus-search:index_status` — no params
-- `index-tools:rebuild_indexes` — `load?`
+- `corpus-search:search_corpus` — `query`, `limit?`, `mode?`, `category_filter?`, `type_filter?`, `missing_filter?`, `show_sections?`, `system?`, `representation_filter?`
+- `corpus-search:get_section` — `path`, `heading?`, `level?`, `system?`
+- `corpus-search:get_system_record` — `system`, `entry_key?`, `dataset?`, `record_id?`
+- `corpus-search:index_status` — `system?`
+- `index-tools:rebuild_indexes` — `load?`, `system?`
 - `transcript:capture_session_transcript` — `share_url`, `campaign`, `session`, `in_game_date?`, `location?`, `keywords?`, `overwrite?`
 - `series-search:search_chapters` — `query`, `series?`, `db?`, `limit?`
 - `series-search:get_chapter` — `chapter_num`, `series?`, `db?`

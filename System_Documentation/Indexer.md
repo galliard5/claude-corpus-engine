@@ -150,6 +150,10 @@ patterns = cfg["directory_index"]["patterns"]
 
 **Failure mode:** Malformed lines log a warning and are skipped. `FileNotFoundError` is the one exception that always raises — there's nothing meaningful to do if the cfg is missing.
 
+**Strict mode:** `load_cfg(path, strict=True)` raises `CfgError` instead, for every line the lenient parser would skip
+and for a section or key that appears twice. Used for a game-system module's `index.cfg`, where a skipped line would
+silently drop a rules directory from its database. The default is unchanged, so `indexer.cfg` still loads leniently.
+
 **CLI:** Run directly to pretty-print a parsed cfg:
 ```cmd
 python cfg_loader.py indexer.cfg
@@ -208,7 +212,44 @@ python build_indexes.py --cfg other.cfg  # use a different cfg
 python build_indexes.py --console        # console output, skip file writes (dry run)
 python build_indexes.py --no-pause       # unattended (used by index-tools and refresh_indexes.bat)
 python build_indexes.py --no-vectors     # FTS5 only, skip the embedding pass
+python build_indexes.py --system MODULE  # one game-system module's database (not the corpus)
+python build_indexes.py --all-systems    # every module with an index.cfg; unregisters removed ones
 ```
+
+### Game-system module databases — `--system` / `--all-systems`
+
+A module under `Game_Systems/<dir>/` with a strict `index.cfg` at its root gets its own search database. The two
+flags build **only** module databases: an ordinary run, including the lore refresh, never rebuilds rulebooks.
+The config, record contract, projection and publication rules live in `Python/system_index.py`, shared with the
+search server; `Search_Server.md` → *Game-system module databases* documents them. In short:
+
+- Each build writes to a temp file (`.<module>.<build_id>.tmp.db`, a name collection never matches) and verifies
+  it (SQLite integrity check, every declared representation non-empty, a `db_info` row). It then re-reads the
+  config and sources and recomputes the fingerprint: if anything changed while it ran, nothing is published.
+  Only then, under the registry lock, is the temp renamed to its immutable generation name,
+  `index/systems/<module>.<build_id>.db`, and `index/systems/registry.json` replaced in one atomic step — so a
+  generation is never on disk unregistered outside the lock, and one build's collection cannot delete another's
+  work. A failure before the swap removes both files and leaves the registry byte-identical; after it, nothing
+  removes the generation. Cleanup asks the registry on disk, not the build's own record of having published, so
+  an interrupt (Ctrl-C) landing between the swap and that record cannot delete the generation the registry now
+  names. Generations no registry entry names are removed best-effort afterwards; one still held
+  open by a reader is left for a later build.
+- **The vector lane stays optional.** A model that cannot run (no cache, no download) publishes the full-text
+  database without vectors and says so, as the corpus build does; vector and hybrid searches fall back to
+  full-text until a rebuild succeeds.
+- Two `index.cfg` files claiming the same module id are refused by both `--system` and `--all-systems`, rather than
+  one silently replacing the other's registry entry. A record's optional `source` must be an object with a
+  non-empty `file` and non-empty `anchors`.
+- Embeddings are carried from the module's live generation into the new one, so an unchanged module re-embeds
+  nothing. Dataset rows are never embedded.
+- The registry records, per module, the generation, build id, schema version, the `index.cfg` hash, a source
+  fingerprint (over normalised paths, content hashes, the config and the schema version — never modification
+  times) and row counts. `index_status(system=...)` recomputes the fingerprint to report freshness.
+- Build history rows carry `"target": "corpus"` or `"system:<module>"` (history schema 2); older rows are corpus
+  builds, and the corpus's timing trend reads only corpus rows.
+- `Python/test_system_index.py` is the self-test: fixture modules, every strict-config and record-contract plant,
+  publication and concurrency, and a gate proving corpus search output byte-identical to the previous schema on
+  one immutable snapshot of the corpus.
 
 ## `index_tools_mcp_server.py`
 
@@ -224,6 +265,9 @@ Runs `python build_indexes.py --no-pause` as a subprocess and returns a formatte
 | `"directory"`     | Append `directory_index.md` (Claude section) to the response.                          |
 | `"with_files"`    | Append `directory_index_with_files.md` (Claude section) to the response.               |
 | `"search_status"` | Append file count and last-built timestamp for `search_index.db`.                       |
+
+`rebuild_indexes(system="<module>")` instead runs `build_indexes.py --system <module>`, rebuilding and publishing
+that one module's database; the corpus is untouched and `load` must be omitted.
 
 **Why subprocess instead of in-process import?** Three reasons:
 1. The MCP server stays small and stable. The heavyweight code lives in a script that exits cleanly each run.

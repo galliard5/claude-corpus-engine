@@ -2,7 +2,7 @@
 name: Corpus Search Server
 type: documentation-component
 keywords: [search, fts5, sqlite, bm25, corpus_meta, corpus_vec, embed_cache, type_filter, missing_filter, category_filter, porter, stemming, search_mcp_server, vector, hybrid, semantic, rrf, sqlite-vec, fastembed, embedding, limit, timeout, query-guard]
-description: Full reference for search_mcp_server.py - FTS5 schema, BM25 weights, the three filters, the corpus_meta hygiene table, and the vector/hybrid (RRF) semantic search lane.
+description: Full reference for search_mcp_server.py - FTS5 schema, BM25 weights, the three filters, the corpus_meta hygiene table, the vector/hybrid (RRF) semantic search lane, and per-module game-system databases (system, representation_filter, get_system_record).
 ---
 
 # Corpus Search Server
@@ -23,6 +23,11 @@ Three query-time tables plus a build-time cache. FTS5 handles full-text ranking;
 | description  | yes      | 3×          | YAML frontmatter `description`          |
 | category     | yes      | 0×          | Directory portion of the relative path  |
 | content      | yes      | 1×          | Markdown body (frontmatter stripped)    |
+| entry_key    | no       | —           | The row's identity (schema 2); see `corpus_meta` |
+
+**Why `entry_key` is the last column:** the BM25 weights and the `snippet()` call address columns by position, so
+adding it last leaves corpus ranking and snippets exactly as they were. `Python/test_system_index.py` proves the
+corpus output byte-identical to schema 1 on the same inputs.
 
 **Why `path` is UNINDEXED:** A top-level setting or campaign folder name appears in thousands of paths. Indexing it would drown content matches. Path is stored for retrieval but excluded from search.
 
@@ -34,18 +39,28 @@ Three query-time tables plus a build-time cache. FTS5 handles full-text ranking;
 
 | Column                  | Type      | Source                                              |
 |-------------------------|-----------|-----------------------------------------------------|
-| path                    | TEXT PK   | Joins to `corpus_fts.path`                          |
+| entry_key               | TEXT PK   | Joins to `corpus_fts.entry_key`: `doc:<path>` or `rec:<dataset>/<id>` |
+| path                    | TEXT      | The container file (a dataset file is shared by all its records) |
 | doc_type                | TEXT      | YAML frontmatter `type:` field (exact string)       |
 | missing_name            | INTEGER   | 1 if `name:` absent or empty                        |
 | missing_keywords        | INTEGER   | 1 if `keywords:` absent or empty                    |
 | missing_description     | INTEGER   | 1 if `description:` absent or empty                 |
 | missing_type            | INTEGER   | 1 if `type:` absent or empty                        |
+| representation          | TEXT      | Module databases only: `verbatim` / `compact` / `dataset`; `''` in the corpus |
+| authority               | TEXT      | Module databases only: `source` / `derived`         |
+| dataset, record_id, record_kind | TEXT | Dataset rows: the declared dataset, the record's id and `kind` |
+| source_path, source_json | TEXT     | Dataset rows: the record's `source.file`, and its whole `source` object (all anchors) |
+| payload                 | TEXT      | Dataset rows: the record's raw JSON line, returned whole by `get_system_record` |
 
-Only populated for `.md` files. Non-markdown files get an empty row so the JOIN doesn't drop them.
+The frontmatter flags are only populated for `.md` files. **Schema 2** (2026-09-24) keyed the table by `entry_key`
+instead of `path`, because one dataset file yields one row per record; every join and filter uses `entry_key`.
+`entry_key` is opaque — nothing recovers a dataset or id by splitting it; those are columns. A `db_info` row records
+the schema version (and, in a module database, its build id, `index.cfg` hash and source fingerprint). An index
+still at schema 1 gets a "rebuild" message from the server rather than a SQL error.
 
 **Why a second table at all?** FTS5's tokenizer splits on hyphens and underscores. The value `setting-document` tokenizes as `["setting", "document"]` — searching `type:"setting-document"` doesn't work, and you can't filter on a column with an unsearchable value. SQL equality on a regular table sidesteps the whole problem.
 
-**Why IN subqueries, not JOIN conditions?** FTS5 has a known quirk where non-MATCH WHERE clauses on joined tables get silently ignored — the query runs but the filter does nothing. Wrapping `corpus_meta` lookups as `f.path IN (SELECT path FROM corpus_meta WHERE doc_type = ?)` is the workaround.
+**Why IN subqueries, not JOIN conditions?** FTS5 has a known quirk where non-MATCH WHERE clauses on joined tables get silently ignored — the query runs but the filter does nothing. Wrapping `corpus_meta` lookups as `f.entry_key IN (SELECT entry_key FROM corpus_meta WHERE doc_type = ?)` is the workaround.
 
 ### `corpus_vec` (sqlite-vec virtual table, optional)
 
@@ -186,13 +201,72 @@ Returns a single section of an indexed document instead of the whole file. It ex
 
 **When not to use it.** Whole-file reads remain correct when the document's shape is the point — establishing voice, checking tone, or any task where surrounding material matters. Section retrieval answers questions; it does not replace reading.
 
+## Game-system module databases (`system`)
+
+Added 2026-09-24. A game-system module — a rules module under `Game_Systems/` — can have its **own** search
+database, so rules never mix into lore results. `search_corpus`, `get_section` and `index_status` take
+`system="<module id>"`; a new tool, `get_system_record`, fetches one structured record whole.
+
+**Declared by the module, built by the one builder.** A module opts in with a strict `index.cfg` at its root naming
+which of its directories to index, as which **representation**, at which **authority**:
+
+| Representation | What it holds | Authority | Vectors |
+|---|---|---|---|
+| `verbatim` | The source rules text, word for word | `source` | yes |
+| `compact`  | Condensed rules, each linked to its verbatim section | `derived` | yes |
+| `dataset`  | Structured JSONL records, one row per record | `derived` | **no** — full-text only |
+
+`build_indexes.py --system <module>` (or `--all-systems`) builds it; an ordinary run never does. The config is
+strict and fails closed — an unknown key, a path outside the module, an overlap between representations, or an
+include that matches nothing fails the build, so a typo cannot silently drop a rules directory. Record contract:
+every record carries `id`, `name` and `dataset`; one file is one dataset; ids are unique across the module. The
+searchable text of a record is a deterministic, field-labelled projection of every key except the module's
+declared `exclude_keys` (provenance and structural pointers); the raw JSON is kept whole for exact fetch.
+
+**Why datasets have no vectors.** Flattened JSON is poor embedding text, and large families of near-identical rows
+would crowd the prose neighbours a semantic search is for. `mode="vector"` restricted to datasets says so
+explicitly rather than falling back; `hybrid` returns the lexical lane's hits.
+
+**Publication by immutable generations.** Each build writes a new `index/systems/<module>.<build_id>.db` and then
+replaces `index/systems/registry.json` — the single pointer to every live generation — in one atomic step, under a
+lock so concurrent builds of different modules cannot lose an entry. A failure before the swap publishes nothing
+and deletes the new file, and cleanup consults the registry itself, so even an interrupt just after the swap
+cannot delete the generation it names; a reader already open keeps its old generation; unreferenced generations are removed
+best-effort by later builds. **The server resolves a module only through the registry**: an unregistered
+generation on disk is never served, a registry entry naming a file outside `index/systems/` is refused, and a
+database whose own build id, module or schema version disagrees with the registry's is refused.
+
+**Why one database per module, not per campaign.** A campaign may run several module layers (a system and a setting
+built on it). One database per campaign would put layers that override one another into one FTS table, ranked by
+relevance with nothing saying which governs. Per-module databases avoid that; chain-aware search across a
+campaign's layers is specified (a separate `campaign=` parameter, per-database ranking kept, never raw BM25 merged
+across databases) and not yet built.
+
+## The `get_system_record` tool
+
+```python
+get_system_record(system: str, entry_key: str | None = None, dataset: str | None = None,
+                  record_id: str | None = None) -> str
+```
+
+Returns one dataset record as pretty JSON under a provenance header: every field, and its whole `source` object
+with all anchors. Exactly one selector — `entry_key` as a hit prints it, or `dataset` with `record_id`. Both,
+neither, a partial pair, another module's key, or a document key is an error. Search finds a record; this returns
+it exactly, so a statistic is never reconstructed from a snippet.
+
 ## The `index_status` tool
 
 ```python
-index_status() -> str
+index_status(system: str | None = None) -> str
 ```
 
-Returns the DB path, total file count, **vector-lane status** (vector count + model, or "not built"), and last-built timestamp. Use to verify freshness — and whether semantic/hybrid search is available — before relying on results.
+Returns the DB path, total file count, **vector-lane status** (vector count + model, or "not built"), and last-built timestamp. Use to verify freshness — and whether semantic/hybrid search is available — before relying on results. It also lists the registered module databases.
+
+**With `system`**, it reports that module's published build, row counts per representation, whether the registry
+and database agree, and — separately — whether the module's sources have **changed since the build**, by
+recomputing the source fingerprint from its `index.cfg` and files. A consistent publication proves the database is
+the one published, not that its sources are unchanged; the two lines answer different questions. If the fingerprint
+cannot be recomputed, freshness is reported as unknown, never assumed.
 
 **Build cost, when a history exists.** If `Python/build_history.jsonl` is present (written by `build_indexes.py` — see *Indexer*), two more lines report the last build's runtime, whether it was cold or reused cached embeddings, the FTS/embed phase split, which path invoked it, and the median and range across recent builds. This is the one place a chat session can see whether rebuilds are getting slower.
 
@@ -239,6 +313,17 @@ Each result includes:
 - All user input passed via SQLite parameter binding (`?` placeholders). No string concatenation, no SQL injection surface.
 - **No filesystem access.** The DB path is hardcoded and the server opens no files. `get_section` takes a `path`, but it is an index key, not a filesystem path: it is matched for equality against `corpus_fts.path` and the body is served from the stored `content` column. A path not in the index returns "not in the index" (with near-miss suggestions on the basename), so traversal sequences, absolute paths, and anything outside the corpus are unreachable by construction rather than by filtering. `level` is whitelisted to 1–6.
 - `missing_filter` is whitelisted server-side against `{"name", "keywords", "description", "type"}`. Any other value is rejected before touching SQL.
+- **`system` is a name, never a path.** It must match `^[a-z0-9_]+$` and resolves only through
+  `index/systems/registry.json`; the registry's database name must be a generation of that module inside
+  `index/systems/`, or it is refused. `representation_filter` is whitelisted against the three representations.
+- **One new file read, stated plainly:** `index_status(system=...)` recomputes the module's source fingerprint, which
+  reads the module's `index.cfg` and the files it declares — all inside the read-only corpus mount. The config is
+  found by searching `Game_Systems/*/index.cfg` for the module id and confined to that tree; **the registry's
+  recorded cfg path is never followed**, so a tampered registry cannot point this read anywhere else. The strict
+  loader then confines every declared input to the module's directory. Nothing else in this server reads outside
+  the index databases and the build history.
+- Hybrid search restricted to dataset records goes straight to the lexical lane without embedding the query, so a
+  broken model cannot defeat a result that never needed it.
 - `mode` is whitelisted against `{"fts", "vector", "hybrid"}`. The sqlite-vec extension is loaded only when a vector/hybrid query needs it, with `enable_load_extension` toggled back off immediately after the load. Embedding runs in-process (local model, no network at query time); the vector lane adds no new external surface.
 - **Runaway guards.** `limit` is capped at `_MAX_LIMIT` (200) — a higher or non-positive value returns a diagnostic error rather than running. Every query runs under a `_QUERY_TIMEOUT_S` (15s) wall-clock guard (a SQLite progress handler that aborts the statement); an overrun returns a timeout error. Both are generous backstops against a pathological call (`limit=100000`, a CPU-pinning query), not normal-use limits, and the error messages name the constant + file so the caps are easy to find and tune in `search_mcp_server.py`.
 
@@ -249,6 +334,7 @@ See `Security_Audit.md` for the full audit walkthrough.
 ```python
 _CORPUS_ROOT = Path(os.environ.get("CORPUS_ROOT", r"D:\claude\filesystem"))
 DB_PATH = _CORPUS_ROOT / "index" / "search_index.db"
+SYSTEMS_DIR = _CORPUS_ROOT / "index" / "systems"      # module generations + registry.json
 ```
 
 `CORPUS_ROOT` env var lets Docker override without editing source. The hardcoded fallback is for native runs. **Must stay in lockstep** with `indexer.cfg [paths] index_directory` and with `index_tools_mcp_server.py SEARCH_DB`.

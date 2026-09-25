@@ -35,6 +35,31 @@ while it stays rare.
 
 ---
 
+## 2026-09-25
+
+### Added
+
+> **Breaking — action required:** the search index schema changes (schema 2), and the server no longer reads a
+> schema-1 index — it answers "rebuild" instead of searching. From `Python/`, rebuild the images with
+> `docker compose up -d --build corpus-search index-tools`, then rebuild the index with
+> `python build_indexes.py`, then restart Claude Desktop so it sees the new tool and parameters. To build the
+> game-system module databases as well, run `python build_indexes.py --all-systems`. Search results over the
+> corpus are unchanged.
+
+- **Game-system rules get their own search databases.** A rules module under `Game_Systems/` can declare a strict
+  `index.cfg` naming which of its directories hold the verbatim rules, condensed rules and structured datasets.
+  `build_indexes.py --system <module>` (or `--all-systems`) builds it into `index/systems/`, apart from the corpus,
+  so rules never mix into lore results.
+- **`search_corpus`, `get_section` and `index_status` take `system="<module>"`**, and `search_corpus` takes
+  `representation_filter`. Every rules hit says whether it is the source text, a condensed rule or a dataset record,
+  and how authoritative it is.
+- **New tool: `corpus-search:get_system_record`** returns one structured record whole — a stat block, a weapon,
+  an item — with its source, so a statistic is never read out of a search snippet.
+- **`index-tools:rebuild_indexes` takes `system`** to rebuild one module's database from chat.
+- `index_status(system=...)` reports whether a module's sources have changed since its database was built.
+
+---
+
 ## 2026-09-12
 
 ### Changed

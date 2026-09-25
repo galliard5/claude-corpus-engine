@@ -43,7 +43,7 @@ TOOL SCHEMA REFERENCE
 
 > **Greppable convention — do not break.** Each tool is a `` ### `server:tool_name` `` header followed by a fenced block whose first line is `params:`; each parameter is one line, `name: type (required)` for required or `name?: type` for optional. Prose stays outside the fenced block. The schema-drift linter (`Python/check_schema_drift.py`) parses tool names + params from these blocks and ignores all prose — keep the form exact when adding or editing tools, or the linter silently under-reports. Run it after any tool-surface change; it is what verified the snapshot date above.
 
-Complete schemas for all 14 filesystem + 3 corpus-search + 1 index-tools + 3 series-search tools = 21 total, captured by direct introspection via `tool_search`.
+Complete schemas for all 14 filesystem + 4 corpus-search + 1 index-tools + 3 series-search tools = 22 total, captured by direct introspection via `tool_search`.
 
 ## Filesystem Read Tools (4)
 
@@ -208,7 +208,7 @@ params:
 ### `filesystem:list_allowed_directories`
 Returns the list of directories this server can access. No params.
 
-## Corpus Search Tools (3)
+## Corpus Search Tools (4)
 
 Custom MCP server exposing FTS5 ranked search over the corpus. See the CORPUS SEARCH section in `file_system_instructions.md` for the high-level when-to-use guidance. Schemas:
 
@@ -223,7 +223,23 @@ params:
   type_filter?: string|null        — exact match on frontmatter type:
   missing_filter?: string|null     — name|keywords|description|type (corpus hygiene)
   show_sections?: boolean          — default true; adds the Sections: line (below)
+  system?: string|null             — a registered game-system module id; searches its database, not the corpus
+  representation_filter?: string|null — with system only: verbatim | compact | dataset, or a comma list
 ```
+**`system` — a game-system module's own rules database.** Each module that declares an `index.cfg` has its own
+database, built by `build_indexes.py --system <module>`, so rules never mix into lore results. `system` takes a
+registered module id (`index_status` lists them), never a path. Its hits add an `Entry:` line — the row's key, the
+module, its **representation** and its **authority** — and a `Source:` line with the source file and anchors:
+
+- `verbatim` — the source rules text, word for word. Authority `source`.
+- `compact` — condensed rules, each linked to its verbatim section. Authority `derived`: where they disagree, the
+  verbatim text wins.
+- `dataset` — structured records (stat blocks, gear, weapons), one row each. Authority `derived`. **Fetch the whole
+  record with `get_system_record`; never read a statistic out of a `Match:` line.** Records are full-text only, so
+  `mode="vector"` over datasets alone returns nothing, by design; `hybrid` returns their lexical hits.
+
+`representation_filter` accepts one value or a comma list; an empty or invalid value, or using it without `system`,
+is an error.
 **Modes:**
 - `"fts"` *(default)* — full-text BM25; exact terms, FTS5 syntax below. Unchanged legacy behaviour.
 - `"vector"` — semantic nearest-neighbour over embeddings; finds meaning-similar docs with no shared words. Query is plain language.
@@ -260,7 +276,9 @@ params:
   path: string (required)          — corpus-relative path, copied from a search result
   heading?: string|null            — section title; omit to list sections without bodies
   level?: integer                  — heading depth to split on, 1-6 (default 2 = ##)
+  system?: string|null             — read a document from that module's database (module-relative path)
 ```
+With `system`, only documents are addressable; asked for a dataset file, it points to `get_system_record`.
 **Heading matching is forgiving.** Case, whitespace, and dash style are normalized, and a unique prefix or substring is enough — `"supply cadence"` resolves `"The Estate's Week — Supply Cadence"`. An ambiguous request returns the candidates rather than guessing; an unmatched one returns the full section list.
 
 **Content comes from the index, not from disk** — `path` is matched for equality against `corpus_fts.path`, so only indexed documents are addressable, and results reflect the last index build (check `index_status`). Sections are derived on the fly; nothing about them is stored.
@@ -269,8 +287,30 @@ params:
 
 **Degrades explicitly, never silently:** a file with no headings at `level`, or one the indexer stores path-only (`[context_limits] = 0`), returns a message saying so rather than an empty or partial section.
 
+### `corpus-search:get_system_record`
+Fetches one whole structured record from a module's datasets — every field, and its whole source object with all
+anchors. Give exactly **one** selector: `entry_key` as a search hit prints it, or `dataset` together with
+`record_id`. Both, neither, a partial pair, another module's key or a document key is refused.
+```
+params:
+  system: string (required)        — a registered game-system module id
+  entry_key?: string|null          — "rec:<dataset>/<id>", copied from a search hit
+  dataset?: string|null            — with record_id: the dataset's declared name
+  record_id?: string|null          — with dataset: the record's id
+```
+**Use case:** a GM resolving a hit needs the exact stat block. Search finds the record's key; this returns the record
+itself, so a statistic is never reconstructed from a snippet or from memory.
+
 ### `corpus-search:index_status`
-Returns the database path, total indexed file count, vector-lane availability, and last-built timestamp. No params.
+Returns the database path, total indexed file count, vector-lane availability, and last-built timestamp, and lists
+the registered module databases.
+```
+params:
+  system?: string|null             — report one module database instead of the corpus
+```
+With `system`, it reports the module's published build and row counts, whether the registry and database agree,
+and — recomputed from the module's own files, not trusted from the build — whether its sources have **changed since
+the build**. A consistent publication is not proof of freshness; the two lines answer different questions.
 
 When the builder has logged builds, two further lines report what the last build actually cost — runtime, whether it was cold or reused cached embeddings, the FTS/embed split, which path invoked it — and the median and range over recent builds. A build labelled **last logged build** rather than *last build* did not produce the index you are querying; treat its numbers as background, not provenance.
 
@@ -285,7 +325,10 @@ Runs `build_indexes.py` directly via subprocess (not the bat — the bat ends wi
 ```
 params:
   load?: string|null   — None | "directory" | "with_files" | "search_status"
+  system?: string|null — rebuild one game-system module's database instead of the corpus
 ```
+**`system`** rebuilds and publishes only that module's search database; the corpus is untouched and `load` must be
+omitted. A failed build publishes nothing, and the previous database stays live.
 
 **`load` values:**
 - `None` (default) — rebuild only; return summary of both build steps

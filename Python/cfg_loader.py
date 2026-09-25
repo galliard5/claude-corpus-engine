@@ -32,6 +32,12 @@ typo in the cfg does not abort a long-running build. FileNotFoundError is the
 one exception that always propagates — there is nothing meaningful to do if
 the cfg itself is missing.
 
+load_cfg(path, strict=True) raises CfgError instead: for a config where a skipped
+line would silently drop part of the configuration (system_index.py's module
+index.cfg). Strict mode also rejects a section or key that appears twice.
+
+changed 2026-09-24: added strict=True and CfgError; the default is unchanged.
+
 Run directly to inspect a parsed cfg:
     python cfg_loader.py path/to/file.cfg
 """
@@ -115,7 +121,11 @@ def _empty_section() -> dict:
 # Public API
 # ---------------------------------------------------------------------------
 
-def load_cfg(path) -> dict:
+class CfgError(ValueError):
+    """Raised by load_cfg(strict=True) for any line the lenient parser would warn about and skip."""
+
+
+def load_cfg(path, strict: bool = False) -> dict:
     """
     Parse a .cfg file and return a Config dict.
 
@@ -139,7 +149,11 @@ def load_cfg(path) -> dict:
     ------
     FileNotFoundError
         If the file does not exist. All other errors produce a warning and
-        continue rather than raising.
+        continue rather than raising — unless strict=True.
+    CfgError
+        With strict=True, for every problem the lenient parser would skip, plus
+        a section or a key that appears twice. A strict config must fail closed:
+        a typo there must not silently drop part of the configuration.
     """
     cfg_path = Path(path)
     if not cfg_path.exists():
@@ -186,6 +200,8 @@ def load_cfg(path) -> dict:
                 # Merge if the section already exists (seen earlier in the file)
                 if current_section not in config:
                     config[current_section] = _empty_section()
+                elif strict:
+                    warnings.append(f"  Line {lineno}: section [{name}] appears twice")
                 continue
 
             # ------------------------------------------------------------------
@@ -214,6 +230,8 @@ def load_cfg(path) -> dict:
                     )
                     continue
 
+                if strict and key in section["settings"]:
+                    warnings.append(f"  Line {lineno}: key '{key}' appears twice in [{current_section}]")
                 section["settings"][key] = _parse_value(raw_value)
                 continue
 
@@ -221,6 +239,9 @@ def load_cfg(path) -> dict:
             # Bare pattern line
             # ------------------------------------------------------------------
             section["patterns"].append(line)
+
+    if strict and warnings:
+        raise CfgError(f"{cfg_path.name}: " + "; ".join(w.strip() for w in warnings))
 
     # Print all warnings as a block after parsing completes
     if warnings:

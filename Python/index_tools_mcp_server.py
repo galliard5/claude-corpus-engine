@@ -20,6 +20,9 @@ subprocess waiting for a keypress. The bat remains available for human use
 Launched by Claude Desktop as a stdio subprocess via claude_desktop_config.json.
 Not intended to be run manually.
 
+changed 2026-09-24: rebuild_indexes gains `system` — rebuild and publish one game-system module's search
+    database (build_indexes.py --system) instead of the corpus; `load` is corpus-only.
+
 changed 2026-09-08: the builder subprocess now inherits CORPUS_BUILD_INVOCATION
     ="container", so build_history.jsonl can tell rebuilds triggered from chat
     apart from refresh_indexes.bat runs. No behaviour change to the rebuild.
@@ -125,8 +128,14 @@ def _search_status_block() -> str:
 
 
 @mcp.tool()
-def rebuild_indexes(load: str | None = None) -> str:
+def rebuild_indexes(load: str | None = None, system: str | None = None) -> str:
     """Rebuild the on-disk corpus indexes by running the build scripts directly.
+
+    With `system` (a game-system module id, e.g. "eclipsephase"), rebuilds and
+    publishes only that module's search database instead of the corpus — the
+    corpus is untouched, and `load` must be omitted. Use it after a module's
+    rules, compact files or datasets change; index_status(system=...) on
+    corpus-search says whether its sources have changed since the last build.
 
     All three artifacts are rebuilt in a single pass via build_indexes.py:
       - directory_index.md
@@ -168,6 +177,14 @@ def rebuild_indexes(load: str | None = None) -> str:
             f"[!] Invalid load value: {load!r}\n"
             f'Valid values: None, "directory", "with_files", "search_status"'
         )
+    target_args = []
+    if system is not None:
+        name = system.strip()
+        if not re.fullmatch(r"[a-z0-9_]+", name):
+            return f"[!] Invalid system name {system!r}: a module id is lowercase letters, digits and underscores."
+        if load is not None:
+            return "[!] load applies to the corpus rebuild; omit it when rebuilding a module (system=...)."
+        target_args = ["--system", name]
 
     # Verify build script exists before starting
     if not BUILDER.exists():
@@ -185,7 +202,7 @@ def rebuild_indexes(load: str | None = None) -> str:
     _BUILD_TIMEOUT_S = 300
     try:
         result = subprocess.run(
-            [py, str(BUILDER), "--no-pause"],
+            [py, str(BUILDER), *target_args, "--no-pause"],
             capture_output=True,
             text=True,
             timeout=_BUILD_TIMEOUT_S,
@@ -213,7 +230,8 @@ def rebuild_indexes(load: str | None = None) -> str:
             f"--- STDERR ---\n{result.stderr or '(empty)'}"
         )
 
-    summary = "[OK] Indexes rebuilt successfully.\n\n" + (result.stdout.rstrip() or "(no stdout)")
+    what = f"Module database '{target_args[1]}' rebuilt and published" if target_args else "Indexes rebuilt"
+    summary = f"[OK] {what} successfully.\n\n" + (result.stdout.rstrip() or "(no stdout)")
 
     if load is None:
         return summary

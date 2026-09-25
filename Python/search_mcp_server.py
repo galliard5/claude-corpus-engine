@@ -48,6 +48,16 @@ changed 2026-09-05: added section-level retrieval. search_corpus results now
     derived on the fly from the stored `content` column — no schema change and
     no reindex. Motivation: a hit on a 30k-char toolkit used to force a
     whole-file read to reach one 1.5k-char section.
+
+changed 2026-09-24: game-system module databases. search_corpus, get_section
+    and index_status take `system` — a registered module id, resolved ONLY
+    through index/systems/registry.json, never a path — and search_corpus takes
+    `representation_filter` (verbatim | compact | dataset). New tool
+    get_system_record fetches one whole structured record. Schema 2: every row
+    has an entry_key, and joins and filters use it instead of path, because one
+    dataset file yields one row per record. Corpus output is byte-identical to
+    schema 1 (Python/test_system_index.py proves it on the same inputs); an
+    index still at schema 1 gets a "rebuild" message instead of a SQL error.
 """
 
 import datetime
@@ -64,12 +74,17 @@ from mcp.server.fastmcp import FastMCP
 # Optional vector lane. embedding.AVAILABLE is False when fastembed / sqlite-vec
 # aren't installed; vector/hybrid modes then degrade to fts with a note.
 import embedding
+import system_index
 
 # CORPUS_ROOT env var allows Docker to override the path without editing this file.
 # Falls back to the local Windows path when not set.
 # DB_PATH must stay in lockstep with build_indexes.py and indexer.cfg index_directory.
 _CORPUS_ROOT = Path(os.environ.get("CORPUS_ROOT", r"D:\claude\filesystem"))
 DB_PATH = _CORPUS_ROOT / "index" / "search_index.db"
+# Game-system module databases: immutable generations in index/systems/, reached ONLY through the registry there
+# (system_index.py). A `system` argument is a registered module id, never a path.
+SYSTEMS_DIR = system_index.systems_dir(_CORPUS_ROOT / "index")
+_REPRESENTATIONS = system_index.REPRESENTATIONS
 
 # Per-build telemetry written by build_indexes.py. Deliberately outside index/,
 # so it survives the index being deleted. Read-only here, and only by
@@ -116,19 +131,98 @@ mcp = FastMCP(
 )
 
 
-def _open_readonly(load_vectors: bool = False) -> sqlite3.Connection:
+def _open_readonly(load_vectors: bool = False, db_path: Path | None = None) -> sqlite3.Connection:
     """Open the database in read-only mode using a SQLite URI.
 
     Rows come back as sqlite3.Row (name- and index-addressable). When
     load_vectors is True and the embedding deps are present, the sqlite-vec
-    extension is loaded so corpus_vec K-NN queries work.
+    extension is loaded so corpus_vec K-NN queries work. db_path defaults to the
+    corpus; a module database is passed in after _resolve_system.
     """
-    uri = f"{DB_PATH.as_uri()}?mode=ro"
+    uri = f"{(db_path or DB_PATH).as_uri()}?mode=ro"
     conn = sqlite3.connect(uri, uri=True)
     conn.row_factory = sqlite3.Row
     if load_vectors and embedding.AVAILABLE:
         embedding.load_vec(conn)
     return conn
+
+
+def _schema_error(conn: sqlite3.Connection) -> str | None:
+    """An index built before schema 2 has no entry_key; every query here joins on it. Say so plainly instead of
+    surfacing a SQL error — the window between rebuilding this image and rebuilding the index is real."""
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(corpus_fts)")}
+    if "entry_key" not in cols:
+        return ("[!] The search index predates this server (schema 1, no entry_key). Rebuild it: "
+                f"python {DB_PATH.parent.parent / 'Python' / 'build_indexes.py'}")
+    return None
+
+
+def _registered() -> str:
+    try:
+        names = sorted(system_index.read_registry(SYSTEMS_DIR)["systems"])
+    except system_index.SystemIndexError:
+        names = []
+    return ", ".join(names) if names else "none"
+
+
+def _resolve_system(system: str):
+    """(db_path, registry entry, None) for a registered module, or (None, None, error string).
+
+    Registry-only: a generation file on disk that no registry entry names is never served, a registry entry
+    naming a file outside index/systems is refused, and the database's own build id must equal the registry's —
+    a mismatch means publication went wrong, and serving it would put the wrong rules in front of the GM."""
+    name = (system or "").strip()
+    if not system_index.SYSTEM_NAME.match(name):
+        return None, None, f"[!] Invalid system name {system!r}: use a registered module id ({_registered()})."
+    try:
+        reg = system_index.read_registry(SYSTEMS_DIR)
+    except system_index.SystemIndexError as e:
+        return None, None, f"[!] {e}"
+    entry = reg["systems"].get(name)
+    if entry is None:
+        return None, None, f"[!] Unknown system {name!r}. Registered: {_registered()}."
+    try:
+        db = system_index.resolve_db(SYSTEMS_DIR, name, entry)
+    except system_index.SystemIndexError as e:
+        return None, None, f"[!] {e}"
+    if not db.exists():
+        return None, None, f"[!] The database registered for {name!r} is missing ({db.name}); rebuild the module."
+    conn = None
+    try:
+        conn = _open_readonly(db_path=db)
+        row = conn.execute("SELECT build_id, module, schema_version FROM db_info LIMIT 1").fetchone()
+    except sqlite3.Error as e:
+        return None, None, f"[!] Could not read the database for {name!r}: {e}"
+    finally:
+        if conn:
+            conn.close()
+    if row is None or row["build_id"] != entry.get("build_id"):
+        return None, None, (f"[!] Refusing a stale publication for {name!r}: the registry names build "
+                            f"{entry.get('build_id')!r} but the database holds {row['build_id'] if row else None!r}. "
+                            f"Rebuild with build_indexes.py --system {name}.")
+    if row["module"] != name:
+        return None, None, (f"[!] Refusing the database registered for {name!r}: it was built for module "
+                            f"{row['module']!r}. Rebuild with build_indexes.py --system {name}.")
+    if row["schema_version"] != system_index.SCHEMA_VERSION:
+        return None, None, (f"[!] Refusing the database registered for {name!r}: its schema is "
+                            f"{row['schema_version']}, this server reads {system_index.SCHEMA_VERSION}. Rebuild it.")
+    return db, entry, None
+
+
+def _parse_representations(raw: str):
+    """(list, None) or (None, error). Comma list; spaces and duplicates tolerated; empty or unknown is an error."""
+    parts = [p.strip() for p in raw.split(",")]
+    wanted = []
+    for p in parts:
+        if p and p not in wanted:
+            wanted.append(p)
+    if not wanted:
+        return None, f"[!] representation_filter is empty. Valid values: {', '.join(_REPRESENTATIONS)}."
+    bad = [p for p in wanted if p not in _REPRESENTATIONS]
+    if bad:
+        return None, (f"[!] Invalid representation_filter value(s): {', '.join(bad)}. "
+                      f"Valid values: {', '.join(_REPRESENTATIONS)}.")
+    return wanted, None
 
 
 def _has_vector_table(conn: sqlite3.Connection) -> bool:
@@ -308,25 +402,27 @@ def _section_manifest(content: str, level: int = 2, lead_title: str | None = Non
     return line
 
 
-def _fetch_manifests(conn, paths) -> dict[str, str]:
-    """Build {path: manifest} for the hits about to be displayed.
+def _fetch_manifests(conn, keys) -> dict[str, str]:
+    """Build {entry_key: manifest} for the document hits about to be displayed.
 
     Deliberately runs after scoring: `content` is the one heavy column in the
     table, so it is only pulled for the handful of rows that will be shown.
     Rows with no indexed content (indexer context_limits = 0) and documents
-    with no usable sections simply don't appear in the result.
+    with no usable sections simply don't appear in the result. Keyed by entry
+    rather than path, because every record in a dataset file shares its path;
+    callers pass only document rows, since a record has no sections.
     """
-    if not paths:
+    if not keys:
         return {}
-    placeholders = ",".join("?" * len(paths))
+    placeholders = ",".join("?" * len(keys))
     out: dict[str, str] = {}
     for row in conn.execute(
-        f"SELECT path, name, content FROM corpus_fts WHERE path IN ({placeholders})",
-        list(paths),
+        f"SELECT entry_key, name, content FROM corpus_fts WHERE entry_key IN ({placeholders})",
+        list(keys),
     ):
         manifest = _section_manifest(row["content"] or "", lead_title=row["name"])
         if manifest:
-            out[row["path"]] = manifest
+            out[row["entry_key"]] = manifest
     return out
 
 
@@ -394,7 +490,12 @@ _DISPLAY_COLS = """
     COALESCE(m.missing_name, 0)         AS missing_name,
     COALESCE(m.missing_keywords, 0)     AS missing_keywords,
     COALESCE(m.missing_description, 0)  AS missing_description,
-    COALESCE(m.missing_type, 0)         AS missing_type
+    COALESCE(m.missing_type, 0)         AS missing_type,
+    f.entry_key                         AS entry_key,
+    COALESCE(m.representation, '')      AS representation,
+    COALESCE(m.authority, '')           AS authority,
+    COALESCE(m.source_path, '')         AS source_path,
+    COALESCE(m.source_json, '')         AS source_json
 """
 
 
@@ -410,7 +511,7 @@ def _fts_lane(conn, match_expr, subquery_filters, subquery_params, limit):
             snippet(corpus_fts, 5, '**', '**', '...', 24) AS preview,
             {_BM25_WEIGHTS} AS rank
         FROM corpus_fts f
-        LEFT JOIN corpus_meta m ON f.path = m.path
+        LEFT JOIN corpus_meta m ON f.entry_key = m.entry_key
         {where_clause}
         ORDER BY rank
         LIMIT ?
@@ -455,7 +556,7 @@ def _fetch_display(conn, rowids, subquery_filters, subquery_params):
         SELECT {_DISPLAY_COLS},
             substr(f.content, 1, 240) AS preview
         FROM corpus_fts f
-        LEFT JOIN corpus_meta m ON f.path = m.path
+        LEFT JOIN corpus_meta m ON f.entry_key = m.entry_key
         {where}
         """,
         list(rowids) + subquery_params,
@@ -503,20 +604,36 @@ def _rrf_fuse(fts_rows, vec_pairs, limit, vec_meta):
 # Formatting
 # ---------------------------------------------------------------------------
 
-def _format_results(query, header_suffix, scored_rows, score_label, manifests=None):
+def _format_results(query, header_suffix, scored_rows, score_label, manifests=None, system=None):
     """Render scored result rows into the text block returned to the client.
 
     scored_rows: list of (row_dict, score_float). score_label tags the score
-    so the meaning (bm25 / similarity / rrf) is visible. manifests maps path ->
-    section manifest for the documents big enough to be worth splitting; a
-    trailing hint points at get_section only when at least one hit has one.
+    so the meaning (bm25 / similarity / rrf) is visible. manifests maps
+    entry_key -> section manifest for the documents big enough to be worth
+    splitting; a trailing hint points at get_section only when at least one hit
+    has one. Module hits (system set) also carry their entry key, module,
+    representation, authority and source; corpus hits are printed exactly as
+    before the module databases existed.
     """
     if not scored_rows:
         return f"No results for: {query}{header_suffix}"
 
     lines = [f"Found {len(scored_rows)} result(s) for: {query}{header_suffix}", ""]
+    records = False
     for i, (row, score) in enumerate(scored_rows, 1):
         lines.append(f"{i}. [{score_label}: {score:.2f}] {row['path']}")
+        if system and row.get("representation"):
+            lines.append(f"   Entry: {row['entry_key']}  [{system} · {row['representation']} · {row['authority']}]")
+            if row.get("source_path") or row.get("source_json"):
+                anchors = ""
+                try:
+                    src = json.loads(row.get("source_json") or "null")
+                    if isinstance(src, dict) and isinstance(src.get("anchors"), dict):
+                        anchors = " #" + ", #".join(f"{v}" for v in src["anchors"].values())
+                except ValueError:
+                    pass
+                lines.append(f"   Source: {row.get('source_path') or '?'}{anchors}")
+            records = records or row["representation"] == "dataset"
         if row.get("name"):
             lines.append(f"   Name: {row['name']}")
         if row.get("keywords"):
@@ -533,7 +650,7 @@ def _format_results(query, header_suffix, scored_rows, score_label, manifests=No
             lines.append(f"   Missing: {', '.join(missing_parts)}")
         if row.get("preview"):
             lines.append(f"   Match: {' '.join(row['preview'].split())}")
-        manifest = (manifests or {}).get(row["path"])
+        manifest = (manifests or {}).get(row["entry_key"])
         if manifest:
             lines.append(f"   Sections: {manifest}")
         lines.append("")
@@ -544,6 +661,9 @@ def _format_results(query, header_suffix, scored_rows, score_label, manifests=No
             "get_section(path, heading) returns one section instead of the "
             "whole file.)"
         )
+    if records:
+        lines.append(f"(Records: get_system_record(system=\"{system}\", entry_key=\"...\") returns the whole "
+                     "structured record with its source. Never read stats from a Match line.)")
     return "\n".join(lines)
 
 
@@ -556,8 +676,10 @@ def search_corpus(
     type_filter: str | None = None,
     missing_filter: str | None = None,
     show_sections: bool = True,
+    system: str | None = None,
+    representation_filter: str | None = None,
 ) -> str:
-    """Ranked search over the worldbuilding corpus.
+    """Ranked search over the worldbuilding corpus, or over one game-system module's rules.
 
     Modes:
         "fts"    (default) full-text BM25. Exact terms, FTS5 query syntax, fast.
@@ -593,11 +715,34 @@ def search_corpus(
             Feed one of those headings to get_section to read just that part
             instead of the whole file. Default True; turn it off if you intend
             to read the full documents anyway.
+        system: A registered game-system module id (e.g. "eclipsephase") to
+            search that module's own database instead of the corpus. Hits then
+            show each row's entry key, module, representation and authority.
+            Omit it to search the corpus. index_status lists what is registered.
+        representation_filter: With `system` only. One representation, or a
+            comma list, of "verbatim" (the source text — authoritative),
+            "compact" (condensed rules — derived; where they disagree, the
+            verbatim source wins) and "dataset" (structured records — fetch one
+            whole with get_system_record, never read stats from a Match line).
+            Dataset records are full-text only: mode="vector" over datasets alone
+            returns nothing, by design.
 
     Returns:
         Formatted ranked results, a 'no results' message, or an error string.
     """
-    if not DB_PATH.exists():
+    db_path, reps = DB_PATH, None
+    if representation_filter is not None and not system:
+        return "[!] representation_filter needs a system — the corpus has no representations."
+    if system:
+        db_path, _entry, err = _resolve_system(system)
+        if err:
+            return err
+        system = system.strip()
+        if representation_filter is not None:
+            reps, err = _parse_representations(representation_filter)
+            if err:
+                return err
+    elif not DB_PATH.exists():
         rebuild_path = DB_PATH.parent / "build_indexes.py"
         return (
             f"[!] Search index not found at {DB_PATH}.\n"
@@ -637,14 +782,20 @@ def search_corpus(
     subquery_params: list = []
     if type_filter:
         subquery_filters.append(
-            "f.path IN (SELECT path FROM corpus_meta WHERE doc_type = ?)"
+            "f.entry_key IN (SELECT entry_key FROM corpus_meta WHERE doc_type = ?)"
         )
         subquery_params.append(type_filter.strip())
     if missing_filter:
         field = missing_filter.lower().strip()
         subquery_filters.append(
-            f"f.path IN (SELECT path FROM corpus_meta WHERE missing_{field} = 1)"
+            f"f.entry_key IN (SELECT entry_key FROM corpus_meta WHERE missing_{field} = 1)"
         )
+    if reps:
+        subquery_filters.append(
+            f"f.entry_key IN (SELECT entry_key FROM corpus_meta WHERE representation IN "
+            f"({', '.join('?' * len(reps))}))"
+        )
+        subquery_params.extend(reps)
     # category_filter is enforced via the FTS MATCH expr for the lexical lane;
     # for the vector lane we add an equivalent path-segment check at fetch time.
     vec_filters = list(subquery_filters)
@@ -661,9 +812,24 @@ def search_corpus(
         suffixes.append(f"type: {type_filter}")
     if missing_filter:
         suffixes.append(f"missing: {missing_filter}")
+    if system:
+        suffixes.insert(0, f"system: {system}")
+    if reps:
+        suffixes.append(f"representation: {', '.join(reps)}")
+
+    # Dataset rows carry no vectors. Say so rather than returning a silent empty list, or falling back.
+    dataset_only = bool(reps) and set(reps) == {"dataset"}
+    if mode == "vector" and dataset_only:
+        return (f"No vector-eligible rows for: {query} [system: {system}, representation: dataset] — dataset "
+                f"records are indexed for full-text search only. Use mode=\"fts\" or \"hybrid\".")
+    fallback_note = ""
+    # Hybrid over datasets alone IS the lexical lane: go straight to it, without embedding the query, so a broken
+    # or absent model cannot defeat a result that never needed it.
+    if mode == "hybrid" and dataset_only:
+        mode = "fts"
+        fallback_note = "dataset records are full-text only - lexical lane"
 
     needs_vectors = mode in ("vector", "hybrid")
-    fallback_note = ""
     if needs_vectors and not embedding.AVAILABLE:
         fallback_note = "vector lane unavailable (deps not installed) - using fts"
         mode = "fts"
@@ -672,7 +838,10 @@ def search_corpus(
     conn = None
     guard = None
     try:
-        conn = _open_readonly(load_vectors=needs_vectors)
+        conn = _open_readonly(load_vectors=needs_vectors, db_path=db_path)
+        schema_err = _schema_error(conn)
+        if schema_err:
+            return schema_err
         guard = _install_query_guard(conn)
 
         if needs_vectors and not _has_vector_table(conn):
@@ -716,7 +885,7 @@ def search_corpus(
 
         # Must happen before the connection closes; only touches displayed rows.
         manifests = (
-            _fetch_manifests(conn, [r["path"] for r, _ in scored])
+            _fetch_manifests(conn, [r["entry_key"] for r, _ in scored if r.get("representation") != "dataset"])
             if show_sections else {}
         )
 
@@ -746,11 +915,11 @@ def search_corpus(
         header_bits.append(fallback_note)
     header_suffix = f" [{', '.join(header_bits)}]" if header_bits else ""
 
-    return _format_results(query, header_suffix, scored, score_label, manifests)
+    return _format_results(query, header_suffix, scored, score_label, manifests, system=system)
 
 
 @mcp.tool()
-def get_section(path: str, heading: str | None = None, level: int = 2) -> str:
+def get_section(path: str, heading: str | None = None, level: int = 2, system: str | None = None) -> str:
     """Return one section of an indexed document instead of the whole file.
 
     Pairs with the `Sections:` line in search_corpus output: the search says
@@ -772,12 +941,23 @@ def get_section(path: str, heading: str | None = None, level: int = 2) -> str:
             Omit it to list the document's sections without pulling any body.
         level: Heading depth to split on. 2 (##) by default; pass 3 to break a
             long section down into its subsections.
+        system: A registered game-system module id, to read a document from that
+            module's database (the path is module-relative, as its search hits
+            print it). Documents only: a dataset file's records come from
+            get_system_record.
 
     Returns:
         The section text with a short provenance header, a section listing when
         `heading` is omitted or ambiguous, or an error string.
     """
-    if not DB_PATH.exists():
+    db_path, doc_filter = DB_PATH, ""
+    if system:
+        db_path, _entry, err = _resolve_system(system)
+        if err:
+            return err
+        system = system.strip()
+        doc_filter = " AND COALESCE(m.representation, '') != 'dataset'"
+    elif not DB_PATH.exists():
         rebuild_path = DB_PATH.parent / "build_indexes.py"
         return (
             f"[!] Search index not found at {DB_PATH}.\n"
@@ -796,17 +976,30 @@ def get_section(path: str, heading: str | None = None, level: int = 2) -> str:
 
     conn = None
     try:
-        conn = _open_readonly()
+        conn = _open_readonly(db_path=db_path)
+        schema_err = _schema_error(conn)
+        if schema_err:
+            return schema_err
         row = conn.execute(
-            """
+            f"""
             SELECT f.path AS path, f.name AS name, f.content AS content,
-                   COALESCE(m.doc_type, '') AS doc_type
+                   COALESCE(m.doc_type, '') AS doc_type,
+                   COALESCE(m.representation, '') AS representation,
+                   COALESCE(m.authority, '') AS authority
             FROM corpus_fts f
-            LEFT JOIN corpus_meta m ON f.path = m.path
-            WHERE f.path = ?
+            LEFT JOIN corpus_meta m ON f.entry_key = m.entry_key
+            WHERE f.path = ?{doc_filter}
             """,
             (wanted,),
         ).fetchone()
+        if row is None and system:
+            is_dataset = conn.execute(
+                "SELECT 1 FROM corpus_meta WHERE path = ? AND representation = 'dataset' LIMIT 1", (wanted,)
+            ).fetchone()
+            if is_dataset:
+                return (f"[!] {wanted} is a dataset file in {system!r}, not a document. Find a record with "
+                        f"search_corpus(system=\"{system}\", representation_filter=\"dataset\") and fetch it "
+                        f"whole with get_system_record(system=\"{system}\", entry_key=\"...\").")
         if row is None:
             # Offer near misses on the basename — the usual cause is a path
             # retyped from memory rather than copied from a result.
@@ -867,10 +1060,77 @@ def get_section(path: str, heading: str | None = None, level: int = 2) -> str:
     if row["name"]:
         tag = f"{row['name']}, {row['doc_type']}" if row["doc_type"] else row["name"]
         provenance += f"  [{tag}]"
+    if system and row["representation"]:
+        provenance += f"  [{system} · {row['representation']} · {row['authority']}]"
     return (
         f"{provenance}  (~{_est_tokens(body)} of ~{_est_tokens(content)} tok)\n"
         f"{'-' * 60}\n"
         f"{body.rstrip()}\n"
+    )
+
+
+@mcp.tool()
+def get_system_record(system: str, entry_key: str | None = None, dataset: str | None = None,
+                      record_id: str | None = None) -> str:
+    """Fetch one whole structured record from a game-system module's datasets.
+
+    Search finds a record; this returns it exactly — every field, and its whole
+    source object with all anchors — so stats are never read out of a search
+    snippet. Give exactly ONE selector form:
+
+    Args:
+        system: A registered game-system module id (e.g. "eclipsephase").
+        entry_key: The record's key exactly as a search hit prints it
+            ("rec:<dataset>/<id>"). Or instead:
+        dataset: The dataset's declared name (the record's own `dataset` field,
+            e.g. "morphs" — not necessarily its file name), together with
+        record_id: the record's id within the module (e.g. "morph/flat").
+
+    Returns:
+        The record as pretty JSON under a provenance header, or an error string.
+    """
+    db_path, _entry, err = _resolve_system(system)
+    if err:
+        return err
+    system = system.strip()
+    by_key = entry_key is not None and dataset is None and record_id is None
+    by_pair = entry_key is None and dataset is not None and record_id is not None
+    if not (by_key or by_pair):
+        return "[!] Give exactly one selector: entry_key, or dataset together with record_id."
+
+    conn = None
+    try:
+        conn = _open_readonly(db_path=db_path)
+        if by_key:
+            row = conn.execute("SELECT * FROM corpus_meta WHERE entry_key = ?", (entry_key.strip(),)).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT * FROM corpus_meta WHERE representation = 'dataset' AND dataset = ? AND record_id = ?",
+                (dataset.strip(), record_id.strip()),
+            ).fetchone()
+    except sqlite3.Error as e:
+        return f"[!] Could not read the database for {system!r}: {e}"
+    finally:
+        if conn:
+            conn.close()
+
+    what = entry_key if by_key else f"{dataset}/{record_id}"
+    if row is None:
+        return f"[!] No record {what!r} in {system!r}. Search with representation_filter=\"dataset\" for its key."
+    if row["representation"] != "dataset":
+        return (f"[!] {what!r} is a {row['representation'] or 'corpus'} document, not a record — read it with "
+                f"get_section(path=\"{row['path']}\", system=\"{system}\").")
+    try:
+        record = json.dumps(json.loads(row["payload"]), indent=2, ensure_ascii=False)
+    except ValueError:
+        record = row["payload"]
+    source = row["source_json"] or "(none recorded)"
+    return (
+        f"{row['entry_key']}  [{system} · dataset {row['dataset']} · {row['record_kind'] or 'record'} · "
+        f"{row['authority']}]\n"
+        f"Source: {row['source_path'] or '?'}  {source}\n"
+        f"{'-' * 60}\n"
+        f"{record}\n"
     )
 
 
@@ -945,7 +1205,8 @@ def _describe_build(rec: dict) -> str:
 
 def _history_lines(db_mtime: datetime.datetime) -> list[str]:
     """Build-history lines for index_status, or [] when there is no usable log."""
-    records = _read_build_history(_HISTORY_READ_N)
+    # Module builds share the log; they must not enter the corpus's trend. Rows without a target predate them.
+    records = [r for r in _read_build_history(_HISTORY_READ_N) if r.get("target", "corpus") == "corpus"]
     if not records:
         return []
 
@@ -993,9 +1254,43 @@ def _history_lines(db_mtime: datetime.datetime) -> list[str]:
     return lines
 
 
+def _system_status(system: str) -> str:
+    """Publication consistency, and — separately — source freshness, recomputed from the module's sources."""
+    db, entry, err = _resolve_system(system)
+    if err:
+        return err
+    system = system.strip()
+    try:
+        # The registry's recorded cfg path is NOT used: a tampered one could point anywhere. The Game_Systems tree,
+        # searched by module id and confined to it, decides which config describes this module.
+        cfg_path = system_index.find_cfg(_CORPUS_ROOT, system)
+        if cfg_path is None:
+            raise system_index.SystemIndexError(f"no Game_Systems/*/index.cfg declares {system!r}")
+        cfg = system_index.load_system_cfg(cfg_path)
+        now = system_index.source_fingerprint(cfg)
+        freshness = ("unchanged since the build" if now == entry.get("source_fingerprint") else
+                     f"CHANGED since the build — rebuild with build_indexes.py --system {system}")
+    except (system_index.SystemIndexError, OSError) as e:
+        freshness = f"unknown — could not recompute ({e})"
+    counts = entry.get("counts") or {}
+    return "\n".join([
+        f"Module database status: {system}",
+        f"  Database:       {db.name} (schema {entry.get('schema_version')})",
+        f"  Build:          {entry.get('build_id')}, built {entry.get('built_at')}",
+        f"  Rows:           " + ", ".join(f"{k} {v}" for k, v in counts.items()),
+        f"  Publication:    consistent (the registry and the database name the same build)",
+        f"  Sources:        {freshness}",
+    ])
+
+
 @mcp.tool()
-def index_status() -> str:
-    """Report the current state of the search index.
+def index_status(system: str | None = None) -> str:
+    """Report the current state of the search index, or of one game-system module's database.
+
+    With `system`, reports that module's published build, its row counts, whether
+    the registry and database agree, and — recomputed from the module's own files,
+    not trusted from the build — whether its sources have changed since. Without
+    it, reports the corpus and lists the registered module databases.
 
     Returns the database path, total indexed files, vector-lane availability,
     and last-built timestamp. Useful for checking whether the index is stale or
@@ -1007,6 +1302,8 @@ def index_status() -> str:
     healthy" and "is it getting slower" are answered with evidence rather than a
     bare timestamp. Absent or unreadable history is silently omitted.
     """
+    if system:
+        return _system_status(system)
     if not DB_PATH.exists():
         rebuild_path = DB_PATH.parent / "build_indexes.py"
         return (
@@ -1057,6 +1354,8 @@ def index_status() -> str:
         f"  Last built:     {mtime.strftime('%Y-%m-%d %H:%M:%S')} ({age_str})",
     ]
     lines.extend(_history_lines(mtime))
+    if (SYSTEMS_DIR / system_index.REGISTRY).exists():
+        lines.append(f"  Module DBs:     {_registered()}  (index_status(system=...) for one)")
     return "\n".join(lines)
 
 

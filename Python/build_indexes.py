@@ -42,10 +42,20 @@ Replaces: build_directory_indexes.py + build_search_index.py
 #   classifications: "cold build" is derived by the reader, so the definition
 #   can change later without invalidating rows. Writing it can never fail a
 #   build. Surfaced to chat by search_mcp_server.index_status.
+#
+# changed 2026-09-24: game-system module databases (--system MODULE / --all-systems), built from a
+#   module's strict Game_Systems/<dir>/index.cfg and published as immutable generations
+#   (index/systems/<module>.<build_id>.db) behind an atomically replaced registry.json — see
+#   system_index.py. Schema 2 for every database: corpus_meta keyed by entry_key, corpus_fts gains
+#   entry_key as its LAST column (so ranking weights and snippet columns are unchanged), and a db_info
+#   row. Dataset records are indexed one row each, full-text only. An ordinary run still builds only
+#   the corpus. Build history schema 2 adds "target".
 
 Usage:
     python build_indexes.py                   # reads indexer.cfg, writes all outputs
     python build_indexes.py --cfg other.cfg   # use a different cfg file
+    python build_indexes.py --system MODULE   # build one game-system module's database, not the corpus
+    python build_indexes.py --all-systems     # every module with an index.cfg; unregister removed ones
     python build_indexes.py --console         # print trees to console, skip file writes
     python build_indexes.py --no-pause        # unattended run (used by refresh_indexes.bat)
 """
@@ -69,6 +79,7 @@ import yaml
 # cfg_loader.py lives alongside this script
 sys.path.insert(0, str(Path(__file__).parent))
 from cfg_loader import load_cfg
+import system_index
 
 # Optional vector-search lane. embedding.AVAILABLE is False when fastembed /
 # sqlite-vec aren't installed (e.g. an older Docker image) — the FTS5 build
@@ -98,7 +109,9 @@ DB_FILENAME       = "search_index.db"
 # index-tools mounts /corpus read-write, so container-invoked rebuilds append to
 # the same file the host .bat writes rather than splitting the history in two.
 HISTORY_PATH   = Path(__file__).parent / "build_history.jsonl"
-HISTORY_SCHEMA = 1
+# Schema 2 adds "target": "corpus" or "system:<module>". Rows without it predate module databases and are corpus
+# builds; readers must filter by target so a module build never enters the corpus's timing trend.
+HISTORY_SCHEMA = 2
 # Not rotation — at ~300 bytes a build this is decades away. It exists so a
 # runaway loop announces itself instead of quietly filling the disk.
 HISTORY_WARN_BYTES = 5 * 1024 * 1024
@@ -643,6 +656,86 @@ class SearchStats:
         return any(path == "<vector index>" for path, _ in self.errors)
 
 
+# Schema 2 is shared by the corpus database and every module database, so the search server has one query
+# path. corpus_meta is keyed by entry_key rather than path, because one dataset file yields one row per
+# record; the system columns stay empty for corpus rows. corpus_fts keeps its original column order and gains
+# entry_key LAST, so the bm25 column weights and the snippet column index in search_mcp_server.py still point
+# at the same columns and corpus ranking is unchanged.
+META_COLUMNS = (
+    "entry_key", "path", "doc_type", "missing_name", "missing_keywords", "missing_description", "missing_type",
+    "representation", "authority", "dataset", "record_id", "record_kind", "source_path", "source_json", "payload",
+)
+
+
+def _create_search_schema(cur) -> None:
+    cur.execute("DROP TABLE IF EXISTS corpus_meta")
+    cur.execute(
+        """
+        CREATE TABLE corpus_meta (
+            entry_key           TEXT    PRIMARY KEY,
+            path                TEXT    NOT NULL,
+            doc_type            TEXT    NOT NULL DEFAULT '',
+            missing_name        INTEGER NOT NULL DEFAULT 0,
+            missing_keywords    INTEGER NOT NULL DEFAULT 0,
+            missing_description INTEGER NOT NULL DEFAULT 0,
+            missing_type        INTEGER NOT NULL DEFAULT 0,
+            representation      TEXT    NOT NULL DEFAULT '',
+            authority           TEXT    NOT NULL DEFAULT '',
+            dataset             TEXT    NOT NULL DEFAULT '',
+            record_id           TEXT    NOT NULL DEFAULT '',
+            record_kind         TEXT    NOT NULL DEFAULT '',
+            source_path         TEXT    NOT NULL DEFAULT '',
+            source_json         TEXT    NOT NULL DEFAULT '',
+            payload             TEXT    NOT NULL DEFAULT ''
+        )
+        """
+    )
+    cur.execute("DROP TABLE IF EXISTS corpus_fts")
+    cur.execute(
+        """
+        CREATE VIRTUAL TABLE corpus_fts USING fts5(
+            path        UNINDEXED,
+            name,
+            keywords,
+            description,
+            category,
+            content,
+            entry_key   UNINDEXED,
+            tokenize = 'porter unicode61'
+        )
+        """
+    )
+    cur.execute("DROP TABLE IF EXISTS db_info")
+    cur.execute(
+        """
+        CREATE TABLE db_info (
+            schema_version     INTEGER NOT NULL,
+            module             TEXT    NOT NULL DEFAULT '',
+            build_id           TEXT    NOT NULL DEFAULT '',
+            built_at           TEXT    NOT NULL DEFAULT '',
+            cfg_sha256         TEXT    NOT NULL DEFAULT '',
+            source_fingerprint TEXT    NOT NULL DEFAULT '',
+            counts             TEXT    NOT NULL DEFAULT '{}'
+        )
+        """
+    )
+
+
+def _insert_row(cur, meta: dict, name, keywords, description, category, content) -> int:
+    """Insert one searchable row into corpus_meta and corpus_fts; returns the FTS rowid."""
+    cols = [c for c in META_COLUMNS if c in meta]
+    cur.execute(
+        f"INSERT INTO corpus_meta({', '.join(cols)}) VALUES ({', '.join('?' * len(cols))})",
+        [meta[c] for c in cols],
+    )
+    cur.execute(
+        "INSERT INTO corpus_fts(path, name, keywords, description, category, content, entry_key) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (meta["path"], name, keywords, description, category, content, meta["entry_key"]),
+    )
+    return cur.lastrowid
+
+
 def build_search_db(
     search_files:    list[Path],
     root:            Path,
@@ -690,33 +783,7 @@ def build_search_db(
                 f"CREATE VIRTUAL TABLE corpus_vec USING vec0(embedding float[{embedding.EMBED_DIM}])"
             )
 
-    cur.execute("DROP TABLE IF EXISTS corpus_meta")
-    cur.execute(
-        """
-        CREATE TABLE corpus_meta (
-            path                TEXT    PRIMARY KEY,
-            doc_type            TEXT    NOT NULL DEFAULT '',
-            missing_name        INTEGER NOT NULL DEFAULT 0,
-            missing_keywords    INTEGER NOT NULL DEFAULT 0,
-            missing_description INTEGER NOT NULL DEFAULT 0,
-            missing_type        INTEGER NOT NULL DEFAULT 0
-        )
-        """
-    )
-    cur.execute("DROP TABLE IF EXISTS corpus_fts")
-    cur.execute(
-        """
-        CREATE VIRTUAL TABLE corpus_fts USING fts5(
-            path        UNINDEXED,
-            name,
-            keywords,
-            description,
-            category,
-            content,
-            tokenize = 'porter unicode61'
-        )
-        """
-    )
+    _create_search_schema(cur)
 
     errors = stats.errors
     # (fts_rowid, content_hash, embed_text) collected during the loop, then turned
@@ -760,16 +827,11 @@ def build_search_db(
         missing_type     = int(is_md and not meta.get("type"))
 
         try:
-            cur.execute(
-                "INSERT INTO corpus_meta(path, doc_type, missing_name, missing_keywords, missing_description, missing_type) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
-                (path_str, doc_type, missing_name, missing_keywords, missing_desc, missing_type),
-            )
-            cur.execute(
-                "INSERT INTO corpus_fts(path, name, keywords, description, category, content) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
-                (path_str, name, keywords, description, category, body),
-            )
+            _insert_row(cur, {
+                "entry_key": "doc:" + path_str, "path": path_str, "doc_type": doc_type,
+                "missing_name": missing_name, "missing_keywords": missing_keywords,
+                "missing_description": missing_desc, "missing_type": missing_type,
+            }, name, keywords, description, category, body)
             stats.indexed += 1
             stats.content_bytes += len(body.encode("utf-8"))
             if want_vectors:
@@ -800,6 +862,8 @@ def build_search_db(
             # different diagnoses.
             stats.embed_s = time.perf_counter() - embed_start
 
+    cur.execute("INSERT INTO db_info(schema_version) VALUES (?)", (system_index.SCHEMA_VERSION,))
+
     # Guarantee the connection closes even if commit fails, so a failed rebuild
     # never leaks the handle (which would block the next run's writes).
     # NOTE: the DROP/CREATE + inserts are still not one atomic transaction — a
@@ -811,6 +875,325 @@ def build_search_db(
     finally:
         conn.close()
     return stats
+
+
+# ---------------------------------------------------------------------------
+# Module (game-system) databases
+# ---------------------------------------------------------------------------
+
+@dataclass
+class SystemBuild:
+    module:      str
+    build_id:    str = ""
+    db:          str = ""
+    counts:      dict = field(default_factory=dict)
+    stats:       SearchStats = field(default_factory=SearchStats)
+    collected:   list = field(default_factory=list)
+    runtime_s:   float = 0.0
+
+
+def _seed_embed_cache(conn, live_db) -> None:
+    """Copy the live generation's embedding cache into a new one, so unchanged documents are not re-embedded."""
+    if live_db is None or not Path(live_db).exists():
+        return
+    try:
+        conn.execute("ATTACH DATABASE ? AS live", (f"{Path(live_db).as_uri()}?mode=ro",))
+    except sqlite3.Error:
+        return
+    try:
+        have = {r[0] for r in conn.execute("SELECT name FROM live.sqlite_master WHERE type = 'table'")}
+        if {"embed_cache", "embed_cache_info"} <= have:
+            conn.execute("CREATE TABLE IF NOT EXISTS embed_cache (hash TEXT PRIMARY KEY, embedding BLOB NOT NULL)")
+            conn.execute("CREATE TABLE IF NOT EXISTS embed_cache_info (model TEXT, dim INTEGER)")
+            conn.execute("INSERT OR IGNORE INTO embed_cache SELECT hash, embedding FROM live.embed_cache")
+            conn.execute("INSERT INTO embed_cache_info SELECT model, dim FROM live.embed_cache_info")
+        conn.commit()
+    finally:
+        conn.execute("DETACH DATABASE live")
+
+
+def build_system_db(cfg: "system_index.SystemCfg", gen_path: Path, live_db, build_id: str,
+                    fingerprint: str, build_vectors: bool) -> tuple:
+    """Build one module's database into a new generation file. Raises on any failure; the caller removes the
+    file. Returns (SearchStats, counts per representation)."""
+    stats = SearchStats()
+    fts_start = time.perf_counter()
+    conn = sqlite3.connect(f"{gen_path.as_uri()}?mode=rwc", uri=True)
+    try:
+        cur = conn.cursor()
+        want_vectors = build_vectors and embedding.AVAILABLE
+        if embedding.AVAILABLE:
+            embedding.load_vec(conn)
+        _seed_embed_cache(conn, live_db if want_vectors else None)
+        _create_search_schema(cur)
+        if want_vectors:
+            cur.execute(f"CREATE VIRTUAL TABLE corpus_vec USING vec0(embedding float[{embedding.EMBED_DIM}])")
+
+        counts = {rep.name: 0 for rep in cfg.representations}
+        pending_vectors: list[tuple[int, str, str]] = []
+        for rep in cfg.representations:
+            if rep.name == "dataset":
+                continue
+            for f in rep.files:
+                rel = system_index.rel_path(cfg, f)
+                raw = f.read_text(encoding="utf-8")
+                meta, body = _parse_frontmatter(raw) if f.suffix.lower() == ".md" else ({}, raw)
+                is_md = f.suffix.lower() == ".md"
+                name = str(meta.get("name") or f.stem)
+                keywords = _keywords_str(meta.get("keywords"))
+                description = str(meta.get("description") or "")
+                rowid = _insert_row(cur, {
+                    "entry_key": "doc:" + rel, "path": rel, "doc_type": str(meta.get("type") or "") if is_md else "",
+                    "missing_name": int(is_md and not meta.get("name")),
+                    "missing_keywords": int(is_md and not meta.get("keywords")),
+                    "missing_description": int(is_md and not meta.get("description")),
+                    "missing_type": int(is_md and not meta.get("type")),
+                    "representation": rep.name, "authority": rep.authority,
+                }, name, keywords, description, str(Path(rel).parent.as_posix()), body)
+                counts[rep.name] += 1
+                stats.indexed += 1
+                stats.content_bytes += len(body.encode("utf-8"))
+                if want_vectors:
+                    embed_text = embedding.build_embed_text(name, keywords, description, body)
+                    pending_vectors.append((rowid, _embed_hash(embed_text), embed_text))
+
+        # Dataset rows: FTS only. Flattened records are poor embedding text, and families of near-identical rows
+        # would crowd prose neighbours in the vector lane.
+        for rep in cfg.representations:
+            if rep.name != "dataset":
+                continue
+            for rel, dataset, raw, rec in system_index.read_records(cfg, rep):
+                source = rec.get("source")
+                content = system_index.project_record(rec, rep.exclude_keys)
+                _insert_row(cur, {
+                    "entry_key": f"rec:{dataset}/{rec['id']}", "path": rel, "doc_type": "dataset-record",
+                    "representation": rep.name, "authority": rep.authority, "dataset": dataset,
+                    "record_id": rec["id"], "record_kind": str(rec.get("kind") or ""),
+                    "source_path": str(source.get("file") or "") if isinstance(source, dict) else "",
+                    "source_json": json.dumps(source, ensure_ascii=False) if source is not None else "",
+                    "payload": raw,
+                }, rec["name"], " ".join(str(rec.get(k)) for k in ("kind", "category") if rec.get(k)),
+                    "", f"data/{dataset}", content)
+                counts[rep.name] += 1
+                stats.indexed += 1
+                stats.content_bytes += len(content.encode("utf-8"))
+
+        empty = [name for name, n in counts.items() if n == 0]
+        if empty:
+            raise system_index.SystemIndexError(f"representation(s) produced no rows: {', '.join(empty)}")
+        stats.fts_s = time.perf_counter() - fts_start
+
+        if want_vectors and pending_vectors:
+            # The vector lane is optional, as in the corpus build: embedding.AVAILABLE only means the imports
+            # succeeded, not that the model can run. A model, cache or download failure publishes the full-text
+            # database without vectors — search falls back to FTS — and is reported, never fatal.
+            embed_start = time.perf_counter()
+            try:
+                (stats.vec_indexed, stats.vec_embedded,
+                 stats.vec_reused, stats.vec_pruned) = _build_vectors(cur, pending_vectors)
+            except Exception as e:
+                stats.errors.append(("<vector index>", f"Embedding error: {e}"))
+                stats.vec_indexed = stats.vec_embedded = stats.vec_reused = stats.vec_pruned = 0
+                cur.execute("DROP TABLE IF EXISTS corpus_vec")
+                cur.execute("DROP TABLE IF EXISTS _wanted_hashes")
+            finally:
+                stats.embed_s = time.perf_counter() - embed_start
+
+        cur.execute(
+            "INSERT INTO db_info(schema_version, module, build_id, built_at, cfg_sha256, source_fingerprint, counts) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (system_index.SCHEMA_VERSION, cfg.module, build_id, datetime.now(timezone.utc).isoformat(timespec="seconds"),
+             cfg.cfg_sha256, fingerprint, json.dumps(counts, sort_keys=True)),
+        )
+        conn.commit()
+        check = cur.execute("PRAGMA integrity_check").fetchone()[0]
+        if check != "ok":
+            raise system_index.SystemIndexError(f"integrity check failed: {check}")
+    finally:
+        conn.close()
+    return stats, counts
+
+
+def build_and_publish(root: Path, index_dir: Path, cfg_path: Path, build_vectors: bool) -> SystemBuild:
+    """Validate, build, verify and publish one module's database.
+
+    The build writes a temp file garbage collection can never match (system_index.temp_path). Only then, under the
+    registry lock, is it renamed to its immutable generation name and the registry replaced — so the window in
+    which a generation exists but is unregistered is inside the lock, where no other build's collection can run.
+    Before publishing, the config and sources are re-read and the fingerprint recomputed: if anything changed while
+    the build ran, the database may not match what it would claim to be built from, and nothing is published.
+    Anything that fails before the registry swap leaves the registry byte-identical and removes both files; after
+    the swap the generation is published and is never removed here."""
+    start = time.perf_counter()
+    cfg = system_index.load_system_cfg(cfg_path)
+    result = SystemBuild(cfg.module)
+    sdir = system_index.systems_dir(index_dir)
+    sdir.mkdir(parents=True, exist_ok=True)
+    fingerprint = system_index.source_fingerprint(cfg)
+    build_id = system_index.new_build_id()
+    tmp = system_index.temp_path(sdir, cfg.module, build_id)
+    final = sdir / f"{cfg.module}.{build_id}.db"
+    reg_now = system_index.read_registry(sdir)
+    live = None
+    if cfg.module in reg_now["systems"]:
+        try:
+            live = system_index.resolve_db(sdir, cfg.module, reg_now["systems"][cfg.module])
+        except system_index.SystemIndexError:
+            live = None
+    published = False
+    try:
+        stats, counts = build_system_db(cfg, tmp, live, build_id, fingerprint, build_vectors)
+        after = system_index.source_fingerprint(system_index.load_system_cfg(cfg_path))
+        if after != fingerprint:
+            raise system_index.SystemIndexError(
+                f"{cfg.module}: the config or sources changed during the build, so the database may not match "
+                f"its recorded fingerprint; nothing published — rebuild")
+        with system_index.registry_lock(sdir):
+            reg = system_index.read_registry(sdir)
+            os.replace(tmp, final)
+            reg["schema_version"] = system_index.SCHEMA_VERSION
+            reg["systems"][cfg.module] = {
+                "module": cfg.module,
+                "db": final.name,
+                "build_id": build_id,
+                "schema_version": system_index.SCHEMA_VERSION,
+                "built_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                "module_dir": cfg.module_dir.relative_to(Path(root).resolve()).as_posix(),
+                "cfg": cfg.cfg_path.relative_to(Path(root).resolve()).as_posix(),
+                "cfg_sha256": cfg.cfg_sha256,
+                "source_fingerprint": fingerprint,
+                "counts": counts,
+            }
+            system_index.write_registry(sdir, reg)
+            published = True
+            # Collection is housekeeping: best-effort, and never able to undo a publication.
+            try:
+                result.collected = system_index.collect_garbage(sdir, reg)
+            except Exception:
+                result.collected = []
+    finally:
+        # The flag alone cannot decide: a KeyboardInterrupt or SystemExit can land after write_registry has
+        # swapped the registry but before `published = True` runs. The registry on disk is the pointer, so it
+        # decides whether `final` is published and must survive.
+        if not published:
+            doomed = [tmp] if _registry_names(sdir, cfg.module, build_id, final.name) else [tmp, final]
+            for f in doomed:
+                try:
+                    f.unlink(missing_ok=True)
+                except OSError:
+                    pass
+    result.build_id, result.db, result.counts, result.stats = build_id, final.name, counts, stats
+    result.runtime_s = time.perf_counter() - start
+    return result
+
+
+def _registry_names(sdir: Path, module: str, build_id: str, db_name: str) -> bool:
+    """Whether the registry on disk publishes this generation. An unreadable registry answers yes: keeping the
+    file leaves at worst an orphan that collection removes later, while deleting it could leave the registry
+    pointing at nothing."""
+    try:
+        entry = system_index.read_registry(sdir)["systems"].get(module)
+    except Exception:
+        return True
+    return isinstance(entry, dict) and entry.get("build_id") == build_id and entry.get("db") == db_name
+
+
+def prune_registry(root: Path, index_dir: Path) -> list:
+    """Drop registry entries whose module no index.cfg claims any more, then collect their generations. The
+    registry's own cfg path is not trusted for this: only the Game_Systems tree decides what exists."""
+    sdir = system_index.systems_dir(index_dir)
+    if not (sdir / system_index.REGISTRY).exists():
+        return []
+    with system_index.registry_lock(sdir):
+        reg = system_index.read_registry(sdir)
+        gone = [m for m in reg["systems"] if not system_index.cfgs_for(root, m)]
+        for m in gone:
+            del reg["systems"][m]
+        if gone:
+            system_index.write_registry(sdir, reg)
+        try:
+            system_index.collect_garbage(sdir, reg)
+        except Exception:
+            pass
+    return gone
+
+
+def run_systems(args, root: Path, index_dir: Path) -> int:
+    """--system / --all-systems. Builds only module databases; the corpus is untouched."""
+    failures = 0
+    if args.all_systems:
+        targets = []
+        claims = {}
+        for cfg_path in system_index.discover(root):
+            claims.setdefault(system_index.declared_module(cfg_path) or cfg_path.parent.name.lower(), []).append(cfg_path)
+        for module, paths in sorted(claims.items()):
+            if len(paths) > 1:
+                failures += 1
+                print(f"\n[!] FAILED — nothing published for {module!r}: declared by more than one index.cfg: "
+                      + ", ".join(f"{p.parent.name}/{p.name}" for p in paths))
+            else:
+                targets.append(paths[0])
+        if not claims:
+            print(f"No Game_Systems/*/index.cfg under {root}.")
+    else:
+        name = args.system.strip()
+        if not system_index.SYSTEM_NAME.match(name):
+            print(f"Error: invalid module name {name!r}")
+            return 1
+        try:
+            found = system_index.find_cfg(root, name)
+        except system_index.SystemIndexError as e:
+            print(f"Error: {e}")
+            return 1
+        if found is None:
+            print(f"Error: no Game_Systems/*/index.cfg for module {name!r}")
+            return 1
+        targets = [found]
+
+    for cfg_path in targets:
+        started = time.perf_counter()
+        print(f"\nModule database: {cfg_path.parent.name}")
+        try:
+            b = build_and_publish(root, index_dir, cfg_path, build_vectors=not args.no_vectors)
+        except Exception as e:
+            failures += 1
+            print(f"  [!] FAILED — nothing published: {e}")
+            _log_build({"schema": HISTORY_SCHEMA, "target": f"system:{cfg_path.parent.name.lower()}",
+                        "timestamp": datetime.now().astimezone().isoformat(timespec="seconds"),
+                        "runtime_s": round(time.perf_counter() - started, 3), "failed": True,
+                        "error": str(e)[:500], "invocation": _detect_invocation()})
+            continue
+        s = b.stats
+        print(f"  Published:  {b.db}")
+        print(f"  Rows:       " + ", ".join(f"{k} {v}" for k, v in b.counts.items()))
+        if args.no_vectors:
+            print("  Vectors:    skipped (--no-vectors)")
+        elif not embedding.AVAILABLE:
+            print("  Vectors:    skipped (deps not installed)")
+        elif s.vector_failed:
+            print("  Vectors:    [!] FAILED — the full-text database was published without vectors; vector and "
+                  "hybrid search fall back to full-text until a rebuild succeeds")
+            for _path, err in s.errors:
+                print(f"    {err}")
+        else:
+            print(f"  Vectors:    {s.vec_indexed} indexed, {s.vec_embedded} newly embedded, "
+                  f"{s.vec_reused} reused (documents only; dataset rows are full-text only)")
+        if b.collected:
+            print(f"  Collected:  {', '.join(b.collected)}")
+        print(f"  Runtime:    {b.runtime_s:.2f}s")
+        _log_build({"schema": HISTORY_SCHEMA, "target": f"system:{b.module}", "build_id": b.build_id,
+                    "timestamp": datetime.now().astimezone().isoformat(timespec="seconds"),
+                    "runtime_s": round(b.runtime_s, 3), "fts_s": round(s.fts_s, 3), "embed_s": round(s.embed_s, 3),
+                    "files_indexed": s.indexed, "counts": b.counts, "embedded_new": s.vec_embedded,
+                    "reused": s.vec_reused, "vectors_indexed": s.vec_indexed,
+                    "vector_lane_available": embedding.AVAILABLE, "no_vectors_flag": args.no_vectors,
+                    "vector_failed": s.vector_failed, "error_count": len(s.errors),
+                    "invocation": _detect_invocation()})
+    if args.all_systems:
+        gone = prune_registry(root, index_dir)
+        if gone:
+            print(f"\nUnregistered (index.cfg removed): {', '.join(gone)}")
+    return 1 if failures else 0
 
 
 # ---------------------------------------------------------------------------
@@ -919,6 +1302,15 @@ def parse_args() -> argparse.Namespace:
         help="After building, run check_schema_drift.py and append its report. "
              "Host-only (needs the MCP stack reachable); used by refresh_indexes.bat."
     )
+    which = parser.add_mutually_exclusive_group()
+    which.add_argument(
+        "--system", metavar="MODULE",
+        help="Build and publish one game-system module's search database (index/systems/), not the corpus."
+    )
+    which.add_argument(
+        "--all-systems", action="store_true",
+        help="Build every module with a Game_Systems/*/index.cfg, and unregister modules whose index.cfg is gone."
+    )
     return parser.parse_args()
 
 
@@ -940,6 +1332,13 @@ def main() -> int:
     except ValueError as e:
         print(f"Error: {e}")
         return 1
+
+    # Module databases are a separate build: an ordinary run (the lore refresh) never rebuilds rulebooks.
+    if args.system or args.all_systems:
+        code = run_systems(args, root, index_dir)
+        if not args.no_pause:
+            input("\nPress Enter to exit...")
+        return code
 
     _mode_dir, dir_excluded, dir_shallow = parse_dir_patterns(cfg)
     search_excluded                       = parse_search_excluded(cfg)
@@ -1051,6 +1450,7 @@ def main() -> int:
     # that crashes outright logs nothing at all.
     _log_build({
         "schema":              HISTORY_SCHEMA,
+        "target":              "corpus",
         "timestamp":           now_local.isoformat(timespec="seconds"),
         "runtime_s":           round(elapsed, 3),
         "walk_s":              round(walk_s, 3),

@@ -18,7 +18,7 @@ building a second module revealed about the interface itself.
 | | |
 |---|---|
 | `Recall_Hazards.md` | Where model recall of a published system fails, and the shape of the failure. Shared across modules rather than copied into each; cited by `Game_Systems/DnD5e/dnd5e.md` |
-| `Interface_Test_Notes.md` | What building the sample d20 module revealed about the call-site interface — including why the adaptation pass exists at all |
+| `Interface_Test_Notes.md` | What building the sample d20 module, and then a second module with replaceable bodies, revealed about the call-site interface — including why the adaptation pass exists at all, and why the everyday substrate must be keyed to the current body |
 | `Recall_Tests/` | The prediction-then-verify pairs behind `Recall_Hazards.md`, committed before any source was consulted |
 
 ## Why the hazards document is shared

@@ -7,12 +7,24 @@
 # result in UPDATE_STATUS.txt next to this script. A code-claude session then reads that
 # file to drive the actual upgrade: review patch notes -> rebuild image -> retag config.
 #
-# Network: a single unauthenticated GET to registry.npmjs.org. No other egress.
+# While the Dockerfile carries its temporary JSON-Schema-dialect PATCH block, it also
+# watches for the upstream fix that makes the patch removable: MCP TypeScript SDK PR
+# modelcontextprotocol/typescript-sdk#2085 merged AND a 1.x SDK release published after
+# the merge. server-filesystem depends on sdk ^1.30.0, so that release reaches us on a
+# plain rebuild — no new server-filesystem version needed. Once the PATCH block is
+# removed from the Dockerfile, these extra checks switch themselves off.
+#
+# Network: unauthenticated GETs to registry.npmjs.org (server-filesystem 'latest';
+# while patched, also the @modelcontextprotocol/sdk packument) and, while patched, one
+# to api.github.com (PR #2085 state). No other egress.
 #
 # Command line arguments:
 #   --no-pause:     Skip end-of-run pause (for the scheduled/automation path)
 #   --test-notify:  Fire a sample notification and exit (verify the task's UI works)
 #   --quiet:        Write the status file but suppress the popup
+#
+# changed 2026-09-26: added the SDK schema-dialect fix watch (PR #2085 + SDK 1.x
+#   release after merge), active only while the Dockerfile has its PATCH block.
 
 import argparse
 import json
@@ -25,6 +37,9 @@ from datetime import datetime
 from pathlib import Path
 
 NPM_LATEST_URL = "https://registry.npmjs.org/@modelcontextprotocol/server-filesystem/latest"
+SDK_PACKUMENT_URL = "https://registry.npmjs.org/@modelcontextprotocol/sdk"
+SDK_FIX_PR_URL = "https://api.github.com/repos/modelcontextprotocol/typescript-sdk/pulls/2085"
+PATCH_MARKER = "PATCH (temporary)"
 HERE = Path(__file__).resolve().parent
 DOCKERFILE = HERE / "Dockerfile"
 STATUS_FILE = HERE / "UPDATE_STATUS.txt"
@@ -55,11 +70,46 @@ def parse_pinned_version():
     return m.group(1)
 
 
+def fetch_json(url, timeout=10):
+    req = urllib.request.Request(url, headers={"Accept": "application/json",
+                                               "User-Agent": "filesystem-mcp-update-check"})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return json.load(resp)
+
+
 def fetch_latest_version():
-    req = urllib.request.Request(NPM_LATEST_URL, headers={"Accept": "application/json"})
-    with urllib.request.urlopen(req, timeout=10) as resp:
-        data = json.load(resp)
-    return data["version"]
+    return fetch_json(NPM_LATEST_URL)["version"]
+
+
+def is_patched():
+    return PATCH_MARKER in DOCKERFILE.read_text(encoding="utf-8")
+
+
+def check_sdk_fix():
+    """Return (status_line, alert_or_None) for the upstream schema-dialect fix.
+
+    The fix counts as released once PR #2085 is merged and a stable 1.x SDK version
+    was published after the merge. A PR closed without merging is also an alert: the
+    fix may have landed some other way, and a human should look at issue #2084.
+    """
+    pr = fetch_json(SDK_FIX_PR_URL)
+    if pr.get("state") == "closed" and not pr.get("merged"):
+        msg = "SDK PR #2085 was CLOSED WITHOUT MERGING - check typescript-sdk#2084 by hand"
+        return msg, msg
+    if not pr.get("merged"):
+        return "SDK fix (PR #2085): not merged yet - keep the Dockerfile PATCH", None
+
+    merged_at = pr["merged_at"]  # ISO-8601 UTC; compares as a string against npm 'time'
+    pack = fetch_json(SDK_PACKUMENT_URL, timeout=30)
+    times = pack.get("time", {})
+    later = [v for v in pack.get("versions", {})
+             if v.startswith("1.") and "-" not in v and times.get(v, "") > merged_at]
+    if not later:
+        return f"SDK fix (PR #2085): merged {merged_at[:10]}, no 1.x release since", None
+    newest = max(later, key=vtuple)
+    msg = (f"SDK FIX RELEASED: PR #2085 merged {merged_at[:10]}, sdk {newest} published since. "
+           f"Rebuild WITHOUT the Dockerfile PATCH sed and confirm the build probe passes.")
+    return msg, msg
 
 
 def vtuple(v):
@@ -73,13 +123,14 @@ def vtuple(v):
     return tuple(parts)
 
 
-def write_status(checked, pinned, latest, status):
+def write_status(checked, pinned, latest, status, extra=()):
     STATUS_FILE.write_text(
         "Filesystem MCP version check\n"
         f"Checked: {checked}\n"
         f"Pinned (running): {pinned}\n"
         f"Latest (npm):     {latest}\n"
-        f"Status: {status}\n",
+        f"Status: {status}\n"
+        + "".join(f"{line}\n" for line in extra),
         encoding="utf-8",
     )
 
@@ -115,22 +166,35 @@ def main():
         print(f"Runtime: {time.time() - start:.2f}s")
         return
 
+    alerts = []
     if vtuple(latest) > vtuple(pinned):
         status = "UPDATE AVAILABLE"
         print(f"{status}: pinned {pinned} -> latest {latest}")
-        if not args.quiet:
-            notify(
-                "Filesystem MCP update available",
-                f"A newer @modelcontextprotocol/server-filesystem is out.\n\n"
-                f"Running (pinned): {pinned}\n"
-                f"Latest (npm):     {latest}\n\n"
-                f"Bring this to a code-claude session to review patch notes and upgrade.",
-            )
+        alerts.append(f"A newer @modelcontextprotocol/server-filesystem is out.\n"
+                      f"Running (pinned): {pinned}\n"
+                      f"Latest (npm):     {latest}")
     else:
         status = "UP TO DATE"
         print(f"{status}: pinned {pinned}, latest {latest}")
 
-    write_status(checked, pinned, latest, status)
+    extra = []
+    if is_patched():
+        try:
+            line, alert = check_sdk_fix()
+        except Exception as e:
+            # Same policy as the npm check: record a transient failure, don't popup.
+            line, alert = f"SDK fix check FAILED ({e})", None
+        print(line)
+        extra.append(line)
+        if alert:
+            alerts.append(alert)
+
+    if alerts and not args.quiet:
+        notify("Filesystem MCP update available",
+               "\n\n".join(alerts)
+               + "\n\nBring this to a code-claude session to review and upgrade.")
+
+    write_status(checked, pinned, latest, status, extra)
     print(f"Status written to {STATUS_FILE}")
     print(f"Runtime: {time.time() - start:.2f}s")
 

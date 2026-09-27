@@ -35,6 +35,26 @@ while it stays rare.
 
 ---
 
+## 2026-09-26
+
+### Fixed
+
+> **Breaking — action required:** if every filesystem tool fails with *"invalid outputSchema … unsupported
+> dialect (draft-07)"*, rebuild the filesystem image and point the local `:latest` at it, then fully quit and
+> restart Claude Desktop. From `Python/filesystem-mcp/`:
+> `docker build -t mcp/filesystem:2026.8.31-schema2020 .` then
+> `docker tag mcp/filesystem:2026.8.31-schema2020 mcp/filesystem:latest`.
+
+- **The filesystem MCP works again with current Claude clients.** Clients released around this date validate
+  tool schemas against JSON Schema 2020-12 only and reject all 14 filesystem tools, because the upstream server
+  declares draft-07. The fault is in the MCP TypeScript SDK v1 (upstream `typescript-sdk#2084`, fix pending in
+  PR #2085), not in `server-filesystem`, whose latest release is still affected. The pinned image now patches
+  the SDK's default dialect at build time, and a build-time probe fails the build if any tool still declares
+  draft-07. The patch is temporary; the Dockerfile says when to remove it.
+- **The weekly update check also watches for the upstream fix.** While the patch is in place,
+  `check_filesystem_update.py` reports and notifies once PR #2085 is merged and an SDK release follows it.
+  That check adds one request to `api.github.com` and one to the npm registry.
+
 ## 2026-09-25
 
 ### Added

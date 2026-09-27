@@ -28,9 +28,16 @@ cd D:\claude\filesystem\Python\filesystem-mcp
 docker build -t mcp/filesystem:<VERSION> .
 ```
 
-The Dockerfile is three lines — a `node:22-alpine` base, a global `npm install` of
+The Dockerfile is a `node:22-alpine` base, a global `npm install` of
 `@modelcontextprotocol/server-filesystem` at the pinned version, and an entrypoint. Its header
 comments carry the changelog for each bump.
+
+**Temporary patch (since 2026-09-26).** One extra build step edits the bundled MCP SDK so
+`tools/list` declares JSON Schema 2020-12 instead of draft-07. Current Claude clients reject
+draft-07 schemas, which disables every filesystem tool. The same step starts the server and fails
+the build if any tool still declares draft-07. The current build is tagged
+`2026.8.31-schema2020`. The Dockerfile's `PATCH` block explains the upstream cause and when to
+remove it. Until then, `check_filesystem_update.py` watches for the upstream fix.
 
 **Bumping the version** has a non-obvious step:
 

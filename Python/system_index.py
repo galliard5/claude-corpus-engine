@@ -36,8 +36,37 @@ that source's line_start..line_end when it has them. The resolved provenance is 
 {"via_row_refs": [{"index", "rows", "source"}]}, one entry per table in first-reference order, and is displayed as
 inherited, never as the record's own.
 
+Layers (chain-aware search, stage 1). A module is also a LAYER that a campaign's rules chain can stack: a system, a
+variant of one, a third-party supplement, or the user's own homebrew. Its manifest's fenced YAML may declare
+
+    kind: system | variant | thirdparty | homebrew    # absent = system (every existing module validates unchanged)
+    extends: <layer id>                               # required for variant, thirdparty and homebrew
+
+and the module root may hold an optional relations.yaml declaring how its entries relate to entries of other
+layers, in the adaptation profile's vocabulary (see parse_relations). Search reports such declarations; it never
+infers one, and nothing here decides which rule governs. A layer that declares neither `extends` nor relations is a
+LEGACY layer: schema 2, fingerprinted and published exactly as before, so an existing module rebuilt by this code
+stays byte-compatible with every reader. A layer that declares either is LAYERED: schema 3, with a relations table,
+a layer_info row and a fingerprint that also covers its manifest, its relations and the build ids of the layers it
+depends on (dependencies(): its extends parent and every relation target layer), each resolved from one registry
+snapshot. The server reads schema 2 only until the chain-search stage, so a layered database is refused there.
+
+Private roots. Besides Game_Systems/<dir>/index.cfg, discovery also reads <root>/<dir>/index.cfg for each private
+layer root the corpus config declares ([rules_layers] private_roots in indexer.cfg; see validate_private_roots).
+The corpus build excludes the same roots from its search index, so a user's own rules are searched through their
+layer only, never through lore search.
+
+Unit hashes. A relation pins its target by content: unit_hash() over canonical bytes (see canonical_unit_bytes), for
+a whole document, one section of it, or one dataset record, read from the target layer's published database.
+
 # changed 2026-09-24: created (Eclipse Phase import, phase 7 — per-module search).
 # changed 2026-09-25: row_refs — provenance for records read from table rows, resolved one hop at build time.
+# changed 2026-10-18: layers — manifest kind/extends with legacy defaults, relations.yaml (strict, layer-qualified
+#   addresses with explicit section selectors, pinned by canonical unit hashes), schema 3 for layered modules only,
+#   the layered fingerprint with dependency commitments, dependency ordering, and private layer roots
+#   (chain-aware search stage 1; design: Working_Documents/Chain_Search_Design_Proposal_v2.md, Codex 936/938).
+#   Review fix (Codex 940): an existing private root may hold only rules-layer folders, so existing lore cannot be
+#   declared one and hidden from lore search.
 """
 
 import fnmatch
@@ -54,8 +83,33 @@ from pathlib import Path
 
 from cfg_loader import CfgError, load_cfg
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 2          # the legacy schema: every module that declares no layering, and the registry format
+SCHEMA_LAYERED = 3          # a module declaring `extends` or relations
 REPRESENTATIONS = ("verbatim", "compact", "dataset")
+LAYER_KINDS = ("system", "variant", "thirdparty", "homebrew")
+RELATIONS_FILE = "relations.yaml"
+# The adaptation profile's vocabulary (Game_Systems adaptation profiles), so search and the compile speak one language.
+RELATION_MODES = ("override", "add", "extend", "partition", "fall_through", "n_a")
+RELATION_STATUSES = ("derived", "settled", "open")
+RELATION_KEYS = {"entry", "target", "mode", "status", "decided", "decider", "target_sha256", "note"}
+ADDRESS_KEYS = {"key", "section"}
+TARGET_KEYS = {"layer", "key", "section"}
+SECTION_KEYS = {"heading", "level"}
+ENTRY_KEY = re.compile(r"^(?:doc:[^\s#]+|rec:[^\s/#]+/[^\s#]+)$")
+DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+HEX64 = re.compile(r"^[0-9a-f]{64}$")
+UNIT_HASH_DOMAIN = b"rules-layer-unit/v1\n"
+PIN_STATES = ("pinned", "unpinned", "changed")
+# The database schemas a layer may depend on: a dependency of any other schema cannot be validated against.
+SUPPORTED_DEPENDENCY_SCHEMAS = (SCHEMA_VERSION, SCHEMA_LAYERED)
+# Besides layer folders and dotfiles, the only file an existing private layer root may hold.
+LAYER_ROOT_ALLOWED_FILES = ("readme.md",)
+# The keys the corpus config's [rules_layers] section may hold.
+RULES_LAYERS_KEYS = ("private_roots",)
+# The heading rules get_section uses (search_mcp_server); kept identical so a relation selects the section a reader
+# fetches. test_layers checks the two implementations agree.
+_ATX_RE = re.compile(r"^(#{1,6})[ \t]+(\S.*?)[ \t]*#*$")
+_FENCE_RE = re.compile(r"^\s{0,3}(```|~~~)")
 AUTHORITIES = ("source", "derived")
 SYSTEM_NAME = re.compile(r"^[a-z0-9_]+$")
 GENERATION = re.compile(r"^(?P<module>[a-z0-9_]+)\.(?P<build>[A-Za-z0-9_-]+)\.db$")
@@ -73,6 +127,15 @@ class SystemIndexError(Exception):
     """A module's configuration, sources or registry is unusable. The message names the file and the problem."""
 
 
+class DependencyCycle(SystemIndexError):
+    """Layers that cannot be ordered: a cycle, and every layer depending on one. `members` names them all."""
+
+    def __init__(self, members):
+        self.members = sorted(members)
+        super().__init__("dependency cycle among layers: " + ", ".join(self.members)
+                         + " — a layer may not extend or relate to a layer that depends on it")
+
+
 @dataclass
 class Representation:
     name: str
@@ -85,6 +148,31 @@ class Representation:
     files: list = field(default_factory=list)   # sorted absolute paths, filled by collect()
 
 
+@dataclass(frozen=True)
+class Address:
+    """A unit in some layer: an entry key (doc:<module-relative path> or rec:<dataset>/<record id>) and, for a
+    document only, an optional section (heading, level). Anchors are never part of a key."""
+    layer: str
+    key: str
+    section: tuple = None    # (heading, level) or None
+
+    def label(self) -> str:
+        s = f"{self.layer}:{self.key}"
+        return s + (f" § {self.section[0]!r} (level {self.section[1]})" if self.section else "")
+
+
+@dataclass
+class Relation:
+    index: int               # 1-based item number in relations.yaml, for messages
+    entry: Address
+    target: Address
+    mode: str
+    status: str
+    decided: str = ""
+    decider: str = ""        # SELF-DECLARED by the layer's author; never verified approval
+    target_sha256: str = ""  # the pinned target content hash; "" = unpinned
+
+
 @dataclass
 class SystemCfg:
     module: str
@@ -92,6 +180,33 @@ class SystemCfg:
     cfg_path: Path
     cfg_sha256: str
     representations: list
+    kind: str = ""                      # as declared; "" = not declared (a legacy module: effectively "system")
+    extends: str = ""
+    manifest_path: Path = None
+    manifest_sha256: str = ""
+    relations_path: Path = None         # the module's relations.yaml, if it has one
+    relations_sha256: str = ""
+    relations: list = field(default_factory=list)
+
+    @property
+    def layered(self) -> bool:
+        """A layered module declares extends or relations; everything else is a legacy module."""
+        return bool(self.extends) or self.relations_path is not None
+
+    @property
+    def schema_version(self) -> int:
+        return SCHEMA_LAYERED if self.layered else SCHEMA_VERSION
+
+    @property
+    def effective_kind(self) -> str:
+        return self.kind or "system"
+
+    def dependencies(self) -> list:
+        """The layers this one depends on: its extends parent and every relation target layer, sorted."""
+        deps = {r.target.layer for r in self.relations}
+        if self.extends:
+            deps.add(self.extends)
+        return sorted(deps)
 
 
 # ---------------------------------------------------------------------------
@@ -106,7 +221,8 @@ def _inside(path: Path, root: Path) -> bool:
         return False
 
 
-def _manifest_module(manifest_path: Path):
+def _read_manifest(manifest_path: Path):
+    """The manifest's first fenced YAML block as a mapping, or None if the file, the block or the YAML is unusable."""
     try:
         text = manifest_path.read_text(encoding="utf-8")
     except OSError:
@@ -119,7 +235,41 @@ def _manifest_module(manifest_path: Path):
         data = yaml.safe_load(m.group(1))
     except yaml.YAMLError:
         return None
-    return str(data.get("module")) if isinstance(data, dict) and data.get("module") is not None else None
+    return data if isinstance(data, dict) else None
+
+
+def _manifest_module(manifest_path: Path):
+    data = _read_manifest(manifest_path)
+    return str(data.get("module")) if data is not None and data.get("module") is not None else None
+
+
+def _layer_fields(data: dict, module: str, manifest_name: str, has_relations: bool) -> tuple:
+    """(kind, extends, problems) from a manifest mapping. Absent kind and extends mean a legacy system module, so
+    every existing manifest validates unchanged. Each problem names the key and the fix."""
+    problems = []
+    kind = data.get("kind")
+    extends = data.get("extends")
+    kind = "" if kind is None else kind
+    extends = "" if extends is None else extends
+    if not isinstance(kind, str) or (kind and kind not in LAYER_KINDS):
+        problems.append(f"{manifest_name}: kind {kind!r} is not one of {', '.join(LAYER_KINDS)} — use homebrew for "
+                        f"your own rules, thirdparty for a published supplement, variant for a setting or conversion "
+                        f"built on a system, system for a standalone system")
+        kind = ""
+    if not isinstance(extends, str) or (extends and not SYSTEM_NAME.match(extends)):
+        problems.append(f"{manifest_name}: extends {extends!r} must be one layer id matching {SYSTEM_NAME.pattern}")
+        extends = ""
+    if extends and extends == module:
+        problems.append(f"{manifest_name}: extends names the layer itself; name the layer this one builds on")
+    if extends and not kind:
+        problems.append(f"{manifest_name}: extends is declared but kind is not — add kind: homebrew, thirdparty or "
+                        f"variant")
+    if kind in ("variant", "thirdparty", "homebrew") and not extends:
+        problems.append(f"{manifest_name}: kind {kind} needs extends: <the layer it builds on or modifies>")
+    if has_relations and not kind:
+        problems.append(f"{manifest_name}: the layer has a {RELATIONS_FILE} but its manifest declares no kind — add "
+                        f"kind (and extends, unless it is a standalone system)")
+    return kind, extends, problems
 
 
 def load_system_cfg(cfg_path) -> SystemCfg:
@@ -144,13 +294,25 @@ def load_system_cfg(cfg_path) -> SystemCfg:
             problems.append("missing required key 'module' in [system]")
     module = str(cfg.get("system", {}).get("settings", {}).get("module", "")).strip()
     module_dir = cfg_path.parent
+    layer_kind = layer_extends = ""      # not `kind`: the representation loop below reuses that name
+    relations, relations_path = [], None
+    if (module_dir / RELATIONS_FILE).is_file():
+        relations_path = module_dir / RELATIONS_FILE
     if module and not SYSTEM_NAME.match(module):
         problems.append(f"module id {module!r} must match {SYSTEM_NAME.pattern}")
     elif module:
-        declared = _manifest_module(module_dir / f"{module}.md")
+        data = _read_manifest(module_dir / f"{module}.md")
+        declared = (str(data.get("module")) if data is not None and data.get("module") is not None else None)
         if declared != module:
             problems.append(f"module {module!r} does not match the module's manifest "
                             f"({module}.md declares {declared!r})")
+        else:
+            layer_kind, layer_extends, more = _layer_fields(data, module, f"{module}.md",
+                                                            relations_path is not None)
+            problems += more
+        if relations_path is not None:
+            relations, more = parse_relations(relations_path, module)
+            problems += more
 
     reps = []
     for section, body in cfg.items():
@@ -198,8 +360,15 @@ def load_system_cfg(cfg_path) -> SystemCfg:
     if problems:
         raise SystemIndexError(f"{where}: " + "; ".join(problems))
 
+    manifest_path = (module_dir / f"{module}.md").resolve()
     cfg_obj = SystemCfg(module, module_dir.resolve(), cfg_path.resolve(),
-                        hashlib.sha256(cfg_path.read_bytes()).hexdigest(), reps)
+                        hashlib.sha256(cfg_path.read_bytes()).hexdigest(), reps,
+                        kind=layer_kind, extends=layer_extends, manifest_path=manifest_path,
+                        manifest_sha256=hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
+                        relations_path=relations_path.resolve() if relations_path is not None else None,
+                        relations_sha256=(hashlib.sha256(relations_path.read_bytes()).hexdigest()
+                                          if relations_path is not None else ""),
+                        relations=relations)
     collect(cfg_obj)
     return cfg_obj
 
@@ -247,10 +416,375 @@ def source_fingerprint(cfg: SystemCfg) -> str:
     return h.hexdigest()
 
 
-def discover(root: Path) -> list:
-    """Every Game_Systems/<dir>/index.cfg, one level deep, in a stable order."""
-    base = Path(root) / "Game_Systems"
-    return sorted(base.glob("*/index.cfg")) if base.is_dir() else []
+def layered_fingerprint(cfg: SystemCfg, depends_on: dict) -> str:
+    """A layered module's fingerprint: everything source_fingerprint covers, plus the manifest's and the relations
+    file's bytes and the build id of every layer it depends on (`depends_on`: {layer: build_id}, from one registry
+    snapshot). Deterministic; never modification times. Only ever used for a layered module."""
+    h = hashlib.sha256()
+    h.update(f"schema:{SCHEMA_LAYERED}\n".encode())
+    h.update(b"cfg:" + cfg.cfg_path.read_bytes() + b"\n")
+    h.update(b"manifest:" + cfg.manifest_path.read_bytes() + b"\n")
+    h.update(b"relations:" + (cfg.relations_path.read_bytes() if cfg.relations_path is not None else b"\0none")
+             + b"\n")
+    for rep in cfg.representations:
+        h.update(f"rep:{rep.name}\n".encode())
+        for f in rep.files:
+            h.update(f"{rel_path(cfg, f)}\0{hashlib.sha256(f.read_bytes()).hexdigest()}\n".encode())
+    for layer in sorted(depends_on):
+        h.update(f"depends_on:{layer}={depends_on[layer]}\n".encode())
+    return h.hexdigest()
+
+
+def fingerprint(cfg: SystemCfg, depends_on: dict = None) -> str:
+    """The fingerprint a module's build records: source_fingerprint, unchanged, for a legacy module (so an existing
+    module is never reported stale merely because the code changed); layered_fingerprint for a layered one."""
+    if not cfg.layered:
+        return source_fingerprint(cfg)
+    return layered_fingerprint(cfg, depends_on or {})
+
+
+# ---------------------------------------------------------------------------
+# Layers: relations, canonical unit hashes, dependency order
+# ---------------------------------------------------------------------------
+
+def _address(raw, where: str, module: str, own: bool, problems: list):
+    """One relations.yaml address, validated, or None. `own` = an entry in this layer (no `layer` key allowed)."""
+    allowed = ADDRESS_KEYS if own else TARGET_KEYS
+    if not isinstance(raw, dict):
+        problems.append(f"{where}: must be a mapping with {', '.join(sorted(allowed))}")
+        return None
+    extra = sorted(set(raw) - allowed)
+    if extra:
+        hint = " — an entry is always in this layer, so it takes no layer" if own and "layer" in extra else ""
+        problems.append(f"{where}: unknown key(s) {', '.join(extra)}{hint}")
+    layer = module
+    if not own:
+        layer = raw.get("layer")
+        if not isinstance(layer, str) or not SYSTEM_NAME.match(layer):
+            problems.append(f"{where}: layer must be a layer id matching {SYSTEM_NAME.pattern}")
+            return None
+        if layer == module:
+            problems.append(f"{where}: a relation's target must be in another layer, not {module!r} itself")
+            return None
+    key = raw.get("key")
+    if not isinstance(key, str) or not key:
+        problems.append(f"{where}: key is required: doc:<module-relative path> or rec:<dataset>/<record id>")
+        return None
+    if "#" in key:
+        problems.append(f"{where}: key {key!r} contains '#'; anchors are not part of an entry key — give the "
+                        f"document key and a section: {{heading: ..., level: ...}}")
+        return None
+    if not ENTRY_KEY.match(key):
+        problems.append(f"{where}: key {key!r} must be doc:<module-relative path> or rec:<dataset>/<record id>, "
+                        f"exactly as a search hit prints it")
+        return None
+    section = None
+    if "section" in raw:
+        sec = raw["section"]
+        if key.startswith("rec:"):
+            problems.append(f"{where}: a record key takes no section; remove it")
+            return None
+        if not isinstance(sec, dict) or set(sec) != SECTION_KEYS:
+            problems.append(f"{where}: section must be {{heading: <exact heading text>, level: <1-6>}}")
+            return None
+        heading, level = sec["heading"], sec["level"]
+        if not isinstance(heading, str) or not norm_heading(heading):
+            problems.append(f"{where}: section heading must be the heading's text")
+            return None
+        if not isinstance(level, int) or isinstance(level, bool) or not 1 <= level <= 6:
+            problems.append(f"{where}: section level must be an integer from 1 to 6 (the number of #s)")
+            return None
+        section = (heading, level)
+    return Address(layer, key, section)
+
+
+def parse_relations(path: Path, module: str) -> tuple:
+    """(relations, problems) from a layer's relations.yaml: a YAML list of mappings
+
+        - entry:  {key: <this layer's entry key>, section: {heading: ..., level: N}}    # section optional, docs only
+          target: {layer: <other layer id>, key: <its entry key>, section: {...}}
+          mode: override | add | extend | partition | fall_through | n_a
+          status: derived | settled | open
+          decided: YYYY-MM-DD          # required when settled
+          decider: <who>               # required when settled; SELF-DECLARED, reported as such, never verified
+          target_sha256: <64 hex>      # optional pin of the target unit's content (unit_hash); absent = unpinned
+          note: <free text>            # optional
+
+    Strict: unknown keys, malformed values and a repeated (entry, target) pair are all problems, each naming the
+    item and the fix. Whether entries and targets exist is checked at build, against real databases."""
+    import yaml
+    where = f"{Path(path).parent.name}/{RELATIONS_FILE}"
+    problems = []
+    try:
+        data = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, yaml.YAMLError) as e:
+        return [], [f"{where}: unreadable YAML ({e})"]
+    if data is None:
+        data = []
+    if not isinstance(data, list):
+        return [], [f"{where}: must be a YAML list of relations (each item starting with '- entry:')"]
+    out, seen = [], set()
+    for i, item in enumerate(data, 1):
+        at = f"{where} item {i}"
+        if not isinstance(item, dict):
+            problems.append(f"{at}: must be a mapping")
+            continue
+        extra = sorted(set(item) - RELATION_KEYS)
+        if extra:
+            problems.append(f"{at}: unknown key(s) {', '.join(extra)} (allowed: {', '.join(sorted(RELATION_KEYS))})")
+        missing = [k for k in ("entry", "target", "mode", "status") if k not in item]
+        if missing:
+            problems.append(f"{at}: missing {', '.join(missing)}")
+            continue
+        entry = _address(item["entry"], f"{at} entry", module, True, problems)
+        target = _address(item["target"], f"{at} target", module, False, problems)
+        mode, status = item["mode"], item["status"]
+        if mode not in RELATION_MODES:
+            problems.append(f"{at}: mode {mode!r} is not one of {', '.join(RELATION_MODES)}")
+        if status not in RELATION_STATUSES:
+            problems.append(f"{at}: status {status!r} is not one of {', '.join(RELATION_STATUSES)}")
+        decided, decider = item.get("decided", ""), item.get("decider", "")
+        decided = decided.isoformat() if hasattr(decided, "isoformat") else decided
+        if decided != "" and (not isinstance(decided, str) or not DATE.match(decided)):
+            problems.append(f"{at}: decided must be a date, YYYY-MM-DD")
+        if decider != "" and (not isinstance(decider, str) or not decider.strip()):
+            problems.append(f"{at}: decider must be a name")
+        if status == "settled" and (not decided or not decider):
+            problems.append(f"{at}: a settled relation needs decided (YYYY-MM-DD) and decider")
+        pin = item.get("target_sha256", "")
+        if pin != "" and not isinstance(pin, str):
+            problems.append(f"{at}: target_sha256 must be quoted, e.g. target_sha256: \"<hash>\" — unquoted, YAML "
+                            f"can read a hash as a number")
+        elif pin != "" and not HEX64.match(pin):
+            problems.append(f"{at}: target_sha256 must be 64 lower-case hex digits (the target's unit hash)")
+        note = item.get("note", "")
+        if not isinstance(note, str):
+            problems.append(f"{at}: note must be text")
+        if entry is None or target is None:
+            continue
+        pair = (entry, target)
+        if pair in seen:
+            problems.append(f"{at}: repeats an earlier relation between {entry.label()} and {target.label()}")
+            continue
+        seen.add(pair)
+        out.append(Relation(i, entry, target, str(mode), str(status), str(decided or ""), str(decider or ""),
+                            str(pin or "")))
+    return out, problems
+
+
+def norm_heading(s: str) -> str:
+    """get_section's heading normalisation (search_mcp_server._norm_heading), identical by design."""
+    for a, b in (("—", "-"), ("–", "-"), ("’", "'"),
+                 ("‘", "'"), ("“", '"'), ("”", '"')):
+        s = s.replace(a, b)
+    return " ".join(s.casefold().split()).strip(" -:#")
+
+
+def _iter_headings(content: str, level: int):
+    in_fence = False
+    fence = ""
+    for i, line in enumerate(content.splitlines()):
+        m = _FENCE_RE.match(line)
+        if m:
+            if not in_fence:
+                in_fence, fence = True, m.group(1)
+            elif line.strip().startswith(fence):
+                in_fence, fence = False, ""
+            continue
+        if in_fence:
+            continue
+        h = _ATX_RE.match(line)
+        if h and len(h.group(1)) == level:
+            yield i, h.group(2).strip()
+
+
+def split_sections(content: str, level: int = 2, lead_title: str = None) -> list:
+    """get_section's section split (search_mcp_server._split_sections), identical by design: [(title, body)] at ATX
+    headings of `level`, deeper headings kept inside, text before the first heading as a leading section."""
+    lines = content.splitlines(keepends=True)
+    marks = list(_iter_headings(content, level))
+    if not marks:
+        return []
+    out = []
+    first = marks[0][0]
+    if first > 0:
+        preamble = "".join(lines[:first])
+        if preamble.strip():
+            h1 = next((t for _, t in _iter_headings(content, 1)), None)
+            out.append((h1 or lead_title or "(opening)", preamble))
+    starts = [i for i, _ in marks]
+    for (start, title), end in zip(marks, starts[1:] + [len(lines)]):
+        out.append((title, "".join(lines[start:end])))
+    return out
+
+
+def normalize_unit_text(text: str) -> str:
+    """Line endings to LF, trailing whitespace removed from every line, leading and trailing blank lines dropped.
+    No Unicode normalisation: a differently composed character is a change."""
+    lines = [ln.rstrip() for ln in text.replace("\r\n", "\n").replace("\r", "\n").split("\n")]
+    while lines and not lines[0]:
+        lines.pop(0)
+    while lines and not lines[-1]:
+        lines.pop()
+    return "\n".join(lines)
+
+
+def canonical_unit_bytes(kind: str, text: str, heading: str = "", level: int = 0) -> bytes:
+    """The exact bytes a unit hash covers, domain-separated by kind so equal text in different kinds never collides:
+
+        record:   DOMAIN "record\\n" + the payload as canonical JSON (keys sorted, no whitespace, UTF-8)
+        document: DOMAIN "document\\n" + normalize_unit_text(the document's indexed content)
+        section:  DOMAIN "section\\n" + "<level>\\n" + norm_heading(heading) + "\\n" + normalize_unit_text(body)
+
+    A document's indexed content is its text without YAML frontmatter, exactly as the database stores it."""
+    if kind == "record":
+        body = json.dumps(json.loads(text), sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        return UNIT_HASH_DOMAIN + b"record\n" + body.encode("utf-8")
+    if kind == "document":
+        return UNIT_HASH_DOMAIN + b"document\n" + normalize_unit_text(text).encode("utf-8")
+    if kind == "section":
+        return (UNIT_HASH_DOMAIN + b"section\n" + f"{level}\n".encode() + norm_heading(heading).encode("utf-8")
+                + b"\n" + normalize_unit_text(text).encode("utf-8"))
+    raise ValueError(f"unknown unit kind {kind!r}")
+
+
+def unit_hash(kind: str, text: str, heading: str = "", level: int = 0) -> str:
+    return hashlib.sha256(canonical_unit_bytes(kind, text, heading, level)).hexdigest()
+
+
+def resolve_unit(conn, address: Address) -> tuple:
+    """(hash, None) for the unit an address names in an open module database, or (None, why) when it does not
+    resolve: no such entry, a section that matches no heading or more than one at its level."""
+    if address.key.startswith("rec:"):
+        row = conn.execute("SELECT payload FROM corpus_meta WHERE entry_key = ? AND representation = 'dataset'",
+                           (address.key,)).fetchone()
+        if row is None:
+            return None, f"no record {address.key} in {address.layer}"
+        return unit_hash("record", row[0]), None
+    row = conn.execute("SELECT f.content, f.name FROM corpus_fts f JOIN corpus_meta m ON m.entry_key = f.entry_key "
+                       "WHERE f.entry_key = ? AND m.representation != 'dataset'", (address.key,)).fetchone()
+    if row is None:
+        return None, f"no document {address.key} in {address.layer}"
+    content, name = row[0] or "", row[1]
+    if address.section is None:
+        return unit_hash("document", content), None
+    heading, level = address.section
+    sections = split_sections(content, level, lead_title=name)
+    hits = [(t, b) for t, b in sections if norm_heading(t) == norm_heading(heading)]
+    if len(hits) != 1:
+        found = ", ".join(repr(t) for t, _ in sections) or "none"
+        return None, (f"{'no' if not hits else 'more than one'} level-{level} section {heading!r} in "
+                      f"{address.layer}:{address.key} (sections at that level: {found})")
+    title, body = hits[0]
+    return unit_hash("section", body, title, level), None
+
+
+def dependency_order(cfgs: list) -> list:
+    """The given module configs in build order: every layer after the layers it depends on (dependencies(): extends
+    and relation targets) that are among them, ties broken by module id. A cycle is refused, naming its members;
+    a dependency outside the list is left to the build, which requires it to be registered already."""
+    by_id = {c.module: c for c in cfgs}
+    pending = {c.module: {d for d in c.dependencies() if d in by_id} for c in cfgs}
+    order = []
+    while pending:
+        ready = sorted(m for m, deps in pending.items() if not deps)
+        if not ready:
+            raise DependencyCycle(pending)
+        for m in ready:
+            order.append(by_id[m])
+            del pending[m]
+        for deps in pending.values():
+            deps.difference_update(ready)
+    return order
+
+
+# ---------------------------------------------------------------------------
+# Discovery: Game_Systems and the declared private layer roots
+# ---------------------------------------------------------------------------
+
+def _root_content_problems(root_dir: Path, raw) -> list:
+    """An EXISTING private root may hold only rules-layer folders — each with its own index.cfg — plus an optional
+    README.md and dotfiles (.gitkeep and the like). Anything else, a folder without an index.cfg or any other file,
+    means the folder is, or contains, something other than rules layers: typically existing lore, which declaring it
+    would silently hide from lore search. That refuses, naming what was found and the fix. A root that does not
+    exist yet, or is empty, holds nothing to hide and is accepted."""
+    if not root_dir.exists():
+        return []
+    if not root_dir.is_dir():
+        return [f"private root {raw!r} is a file, not a folder"]
+    strays = []
+    for child in sorted(root_dir.iterdir(), key=lambda p: p.name.lower()):
+        if child.name.startswith("."):
+            continue
+        if child.is_dir():
+            if not (child / "index.cfg").is_file():
+                strays.append(child.name + "/")
+        elif child.name.lower() not in LAYER_ROOT_ALLOWED_FILES:
+            strays.append(child.name)
+    if not strays:
+        return []
+    shown = ", ".join(strays[:5]) + (f" and {len(strays) - 5} more" if len(strays) > 5 else "")
+    return [f"private root {raw!r} holds {shown}, which is not a rules layer: a private root may hold only layer "
+            f"folders (each with its own index.cfg) and an optional README.md. If this is existing lore, declare a "
+            f"dedicated folder instead (e.g. World_Building/Rules_Layers); if it is a layer still being written, add "
+            f"its index.cfg first"]
+
+
+def validate_private_roots(root: Path, raw_roots) -> tuple:
+    """The declared private layer roots, normalised to corpus-relative POSIX paths, or SystemIndexError.
+
+    Each root must be a relative path of at least two segments inside the corpus root (never a top-level directory),
+    outside Game_Systems and the index directory, without '..', and neither equal to nor nested in another declared
+    root. Two segments alone do not make a folder safe to hide, so an existing root must also hold only rules-layer
+    folders (_root_content_problems): an existing tree of lore is refused. A root that does not exist yet, or is
+    empty, is allowed: it holds no layers, and its exclusion matches nothing."""
+    out, problems = [], []
+    for raw in raw_roots:
+        given = str(raw).strip().replace("\\", "/")
+        r = given.strip("/")
+        if not r:
+            continue
+        parts = r.split("/")
+        if given.startswith("/") or re.match(r"^[A-Za-z]:", r) or ".." in parts or "." in parts:
+            problems.append(f"private root {raw!r} must be a relative path inside the corpus, without '..'")
+            continue
+        if len(parts) < 2:
+            problems.append(f"private root {raw!r} is a top-level directory; name a folder inside one, e.g. "
+                            f"{parts[0]}/Rules_Layers")
+            continue
+        if parts[0].lower() in ("game_systems", "index", "python", ".git"):
+            problems.append(f"private root {raw!r} may not be inside {parts[0]}/")
+            continue
+        if not _inside(Path(root) / r, Path(root)):
+            problems.append(f"private root {raw!r} resolves outside the corpus")
+            continue
+        content = _root_content_problems(Path(root) / r, raw)
+        if content:
+            problems += content
+            continue
+        out.append(r)
+    lowered = [r.lower() for r in out]
+    for i, a in enumerate(lowered):
+        for b in lowered[i + 1:]:
+            if a == b or a.startswith(b + "/") or b.startswith(a + "/"):
+                problems.append(f"private roots {a!r} and {b!r} overlap; declare each folder once")
+    if problems:
+        raise SystemIndexError("; ".join(problems))
+    return tuple(out)
+
+
+def _layer_bases(root: Path, private_roots=()) -> list:
+    return [Path(root) / "Game_Systems"] + [Path(root) / r for r in private_roots]
+
+
+def discover(root: Path, private_roots=()) -> list:
+    """Every Game_Systems/<dir>/index.cfg, and every <private root>/<dir>/index.cfg, one level deep, in a stable
+    order. With no private roots this is exactly the original discovery."""
+    found = []
+    for base in _layer_bases(root, private_roots):
+        if base.is_dir():
+            found += sorted(base.glob("*/index.cfg"))
+    return found
 
 
 def declared_module(cfg_path: Path):
@@ -263,20 +797,22 @@ def declared_module(cfg_path: Path):
     return m.group(1) if m else None
 
 
-def cfgs_for(root: Path, module: str) -> list:
+def cfgs_for(root: Path, module: str, private_roots=()) -> list:
     """Every index.cfg that claims `module`: by declaring it, or by sitting in a directory named like it."""
-    return [p for p in discover(root) if declared_module(p) == module or p.parent.name.lower() == module]
+    return [p for p in discover(root, private_roots)
+            if declared_module(p) == module or p.parent.name.lower() == module]
 
 
-def find_cfg(root: Path, module: str):
-    """The one index.cfg for `module`, or None. Two claiming the same module is an error: the later build would
-    otherwise silently replace the first module's registry entry."""
-    found = cfgs_for(root, module)
+def find_cfg(root: Path, module: str, private_roots=()):
+    """The one index.cfg for `module`, or None. Two claiming the same module — in one tree or across Game_Systems
+    and the private roots — is an error: the later build would otherwise silently replace the first module's
+    registry entry."""
+    found = cfgs_for(root, module, private_roots)
     if len(found) > 1:
         raise SystemIndexError(f"module {module!r} is declared by more than one index.cfg: "
                                + ", ".join(f"{p.parent.name}/{p.name}" for p in found))
-    if found and not _inside(found[0], Path(root) / "Game_Systems"):
-        raise SystemIndexError(f"{found[0]} resolves outside Game_Systems")
+    if found and not any(_inside(found[0], base) for base in _layer_bases(root, private_roots)):
+        raise SystemIndexError(f"{found[0]} resolves outside Game_Systems and the declared private roots")
     return found[0] if found else None
 
 

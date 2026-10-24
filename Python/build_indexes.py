@@ -53,12 +53,24 @@ Replaces: build_directory_indexes.py + build_search_index.py
 # changed 2026-09-25: a dataset's row_refs resolve provenance for records read from table rows, one hop
 #   at build time, into source_json as via_row_refs (source_path stays empty: it is a direct source's
 #   file only). Records are read in full before insertion, since a reference may cross files.
+# changed 2026-10-18: layers (chain-aware search stage 1; see system_index.py). [rules_layers] private_roots in the
+#   cfg declares private layer roots: discovered as module roots beside Game_Systems, and excluded from the corpus
+#   search index (FTS and vector) by exact path prefix — still listed in the directory indexes. A layered module
+#   (extends or relations.yaml) builds at schema 3 with relations and layer_info tables, validated against the
+#   layers it depends on from one registry snapshot, and refuses to publish if one of them was rebuilt meanwhile;
+#   --all-systems builds in dependency order. Legacy modules build exactly as before. --relations MODULE reports each
+#   declared relation's pin state and current target hash, read-only. With no private roots declared, every output
+#   is unchanged. Review fixes (Codex 940): a [rules_layers] section that is present is strict (a misspelled key, a
+#   bare line or an empty private_roots fails the build instead of silently disabling the exclusion); an existing
+#   private root may hold only layer folders (system_index); a dependency's schema must be supported and agree
+#   between the registry and its database.
 
 Usage:
     python build_indexes.py                   # reads indexer.cfg, writes all outputs
     python build_indexes.py --cfg other.cfg   # use a different cfg file
     python build_indexes.py --system MODULE   # build one game-system module's database, not the corpus
     python build_indexes.py --all-systems     # every module with an index.cfg; unregister removed ones
+    python build_indexes.py --relations MODULE   # read-only: a layered module's relations and their pin states
     python build_indexes.py --console         # print trees to console, skip file writes
     python build_indexes.py --no-pause        # unattended run (used by refresh_indexes.bat)
 """
@@ -211,6 +223,32 @@ def parse_search_excluded(cfg: dict) -> set:
     return {p.strip().rstrip("/\\").lower() for p in patterns if p.strip()}
 
 
+def parse_private_roots(cfg: dict, root: Path) -> tuple:
+    """[rules_layers] private_roots: a comma list of corpus-relative folders holding the user's own rules layers.
+
+    No [rules_layers] section means no roots: every output is then exactly what it was before layers existed. A
+    section that IS present is strict, so a typo can never silently switch the exclusion off: a key other than
+    private_roots (e.g. the singular private_root), a line that is not key = value, a missing or empty
+    private_roots — each raises SystemIndexError naming the problem and the fix. The roots themselves are validated
+    by system_index.validate_private_roots. Only this section is strict; the rest of the cfg is read as before."""
+    if "rules_layers" not in cfg:
+        return ()
+    section = cfg["rules_layers"]
+    settings = section.get("settings", {})
+    problems = [f"line {p!r} is not key = value (write: private_roots = {p.strip().rstrip('/')})"
+                for p in section.get("patterns", [])]
+    for key in sorted(set(settings) - set(system_index.RULES_LAYERS_KEYS)):
+        problems.append(f"unknown key {key!r} (the only key is private_roots)")
+    raw = settings.get("private_roots")
+    roots = [r for r in str(raw if raw is not None else "").split(",") if r.strip()]
+    if not roots:
+        problems.append("private_roots names no folder; name at least one (e.g. private_roots = "
+                        "World_Building/Rules_Layers), or remove the [rules_layers] section")
+    if problems:
+        raise system_index.SystemIndexError("; ".join(problems))
+    return system_index.validate_private_roots(root, roots)
+
+
 def parse_file_types(cfg: dict) -> tuple[str, list[str]]:
     """
     Parse [file_types].
@@ -339,9 +377,14 @@ def walk_and_collect(
     search_excluded: set,
     file_mode:       str,
     file_patterns:   list,
+    search_excluded_prefixes: tuple = (),
 ) -> tuple[list, list]:
     """
     Walk the corpus once with os.walk, building all three output datasets.
+
+    search_excluded_prefixes are corpus-relative folders (the declared private layer roots) whose files are kept
+    out of search_files — and so out of both the FTS and the vector lane — by exact path prefix, never by a
+    directory name matching anywhere. They stay in dir_entries: the directory indexes still list them.
 
     Directory ordering per iteration:
         1. Directory entry added to dir_entries first.
@@ -355,6 +398,7 @@ def walk_and_collect(
     """
     dir_entries:  list[tuple[int, str, list]] = []
     search_files: list[Path] = []
+    prefixes = tuple(p.replace("\\", "/").strip("/").lower() for p in search_excluded_prefixes)
 
     for dirpath, dirnames, filenames in os.walk(root):
 
@@ -392,6 +436,8 @@ def walk_and_collect(
         #    descendant that slipped past the pruning step.
         # ----------------------------------------------------------------
         if any(part.lower() in search_excluded for part in rel.parts):
+            continue
+        if any(rel_str == p or rel_str.startswith(p + "/") for p in prefixes):
             continue
 
         for filename in sorted_files:
@@ -915,10 +961,87 @@ def _seed_embed_cache(conn, live_db) -> None:
         conn.execute("DETACH DATABASE live")
 
 
+def _create_layer_tables(cur) -> None:
+    """Schema 3 only: a layered module's declarations, as validated at build."""
+    cur.execute(
+        """
+        CREATE TABLE layer_info (
+            kind              TEXT NOT NULL,
+            extends           TEXT NOT NULL DEFAULT '',
+            manifest_sha256   TEXT NOT NULL,
+            relations_sha256  TEXT NOT NULL DEFAULT '',
+            depends_on        TEXT NOT NULL DEFAULT '{}'
+        )
+        """
+    )
+    cur.execute(
+        """
+        CREATE TABLE relations (
+            item            INTEGER NOT NULL,
+            entry_key       TEXT    NOT NULL,
+            entry_section   TEXT    NOT NULL DEFAULT '',
+            target_layer    TEXT    NOT NULL,
+            target_key      TEXT    NOT NULL,
+            target_section  TEXT    NOT NULL DEFAULT '',
+            mode            TEXT    NOT NULL,
+            status          TEXT    NOT NULL,
+            decided         TEXT    NOT NULL DEFAULT '',
+            decider         TEXT    NOT NULL DEFAULT '',
+            declared_sha256 TEXT    NOT NULL DEFAULT '',
+            current_sha256  TEXT    NOT NULL,
+            pin_state       TEXT    NOT NULL
+        )
+        """
+    )
+
+
+def _section_json(address) -> str:
+    return json.dumps({"heading": address.section[0], "level": address.section[1]}, ensure_ascii=False) \
+        if address.section else ""
+
+
+def check_relations(cfg: "system_index.SystemCfg", own_conn, dep_dbs: dict) -> list:
+    """Resolve every declared relation: its entry in this layer's own database (open on `own_conn`), its target in
+    the target layer's published database (`dep_dbs`: {layer: path}, from one registry snapshot). Returns
+    [(Relation, current target hash, pin state)]; pin state is pinned (matches target_sha256), unpinned (none
+    declared) or changed (declared but different). An entry or target that does not resolve is an orphan, and the
+    whole check fails naming each one and the fix — a relation never publishes pointing at nothing."""
+    out, problems = [], []
+    conns = {}
+    try:
+        for r in cfg.relations:
+            at = f"{system_index.RELATIONS_FILE} item {r.index}"
+            _h, why = system_index.resolve_unit(own_conn, r.entry)
+            if why:
+                problems.append(f"{at}: entry does not resolve in this layer: {why}")
+                continue
+            path = dep_dbs.get(r.target.layer)
+            if path is None:
+                problems.append(f"{at}: target layer {r.target.layer!r} is not built; build it first "
+                                f"(build_indexes.py --system {r.target.layer})")
+                continue
+            if r.target.layer not in conns:
+                conns[r.target.layer] = sqlite3.connect(f"{Path(path).as_uri()}?mode=ro", uri=True)
+            current, why = system_index.resolve_unit(conns[r.target.layer], r.target)
+            if why:
+                problems.append(f"{at}: target is orphaned: {why}")
+                continue
+            state = "unpinned" if not r.target_sha256 else ("pinned" if r.target_sha256 == current else "changed")
+            out.append((r, current, state))
+    finally:
+        for c in conns.values():
+            c.close()
+    if problems:
+        raise system_index.SystemIndexError(f"{cfg.module}: " + "; ".join(problems))
+    return out
+
+
 def build_system_db(cfg: "system_index.SystemCfg", gen_path: Path, live_db, build_id: str,
-                    fingerprint: str, build_vectors: bool) -> tuple:
+                    fingerprint: str, build_vectors: bool, depends_on: dict = None, dep_dbs: dict = None) -> tuple:
     """Build one module's database into a new generation file. Raises on any failure; the caller removes the
-    file. Returns (SearchStats, counts per representation)."""
+    file. Returns (SearchStats, counts per representation). A layered module's database is schema 3 and also
+    holds layer_info and its validated relations; `depends_on` ({layer: build_id}) and `dep_dbs` ({layer: path})
+    come from the caller's one registry snapshot."""
     stats = SearchStats()
     fts_start = time.perf_counter()
     conn = sqlite3.connect(f"{gen_path.as_uri()}?mode=rwc", uri=True)
@@ -989,6 +1112,24 @@ def build_system_db(cfg: "system_index.SystemCfg", gen_path: Path, live_db, buil
         empty = [name for name, n in counts.items() if n == 0]
         if empty:
             raise system_index.SystemIndexError(f"representation(s) produced no rows: {', '.join(empty)}")
+
+        if cfg.layered:
+            _create_layer_tables(cur)
+            cur.execute(
+                "INSERT INTO layer_info(kind, extends, manifest_sha256, relations_sha256, depends_on) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (cfg.effective_kind, cfg.extends, cfg.manifest_sha256, cfg.relations_sha256,
+                 json.dumps(depends_on or {}, sort_keys=True)),
+            )
+            for r, current, state in check_relations(cfg, conn, dep_dbs or {}):
+                cur.execute(
+                    "INSERT INTO relations(item, entry_key, entry_section, target_layer, target_key, target_section, "
+                    "mode, status, decided, decider, declared_sha256, current_sha256, pin_state) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (r.index, r.entry.key, _section_json(r.entry), r.target.layer, r.target.key,
+                     _section_json(r.target), r.mode, r.status, r.decided, r.decider, r.target_sha256, current,
+                     state),
+                )
         stats.fts_s = time.perf_counter() - fts_start
 
         if want_vectors and pending_vectors:
@@ -1010,7 +1151,7 @@ def build_system_db(cfg: "system_index.SystemCfg", gen_path: Path, live_db, buil
         cur.execute(
             "INSERT INTO db_info(schema_version, module, build_id, built_at, cfg_sha256, source_fingerprint, counts) "
             "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (system_index.SCHEMA_VERSION, cfg.module, build_id, datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            (cfg.schema_version, cfg.module, build_id, datetime.now(timezone.utc).isoformat(timespec="seconds"),
              cfg.cfg_sha256, fingerprint, json.dumps(counts, sort_keys=True)),
         )
         conn.commit()
@@ -1020,6 +1161,53 @@ def build_system_db(cfg: "system_index.SystemCfg", gen_path: Path, live_db, buil
     finally:
         conn.close()
     return stats, counts
+
+
+def _dependency_snapshot(cfg: "system_index.SystemCfg", sdir: Path, reg: dict) -> tuple:
+    """({layer: build_id}, {layer: database path}) for every layer `cfg` depends on, from ONE registry snapshot.
+    Each must be registered, its generation file present, its own db_info must agree with the registry (build id,
+    module and schema version), and that schema must be one this builder can validate against
+    (SUPPORTED_DEPENDENCY_SCHEMAS); otherwise the build refuses before anything publishes, naming the layer and the
+    fix."""
+    depends_on, dbs, problems = {}, {}, []
+    for layer in cfg.dependencies():
+        entry = reg["systems"].get(layer)
+        if entry is None:
+            problems.append(f"{layer!r}, which {cfg.module} depends on, is not built; build it first "
+                            f"(build_indexes.py --system {layer})")
+            continue
+        try:
+            path = system_index.resolve_db(sdir, layer, entry)
+        except system_index.SystemIndexError as e:
+            problems.append(str(e))
+            continue
+        row = None
+        if path.exists():
+            conn = sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True)
+            try:
+                row = conn.execute("SELECT build_id, module, schema_version FROM db_info LIMIT 1").fetchone()
+            except sqlite3.Error:
+                row = None
+            finally:
+                conn.close()
+        if row is None or row[0] != entry.get("build_id") or row[1] != layer:
+            problems.append(f"the database registered for {layer!r} is missing or does not match the registry; "
+                            f"rebuild it (build_indexes.py --system {layer})")
+            continue
+        if row[2] != entry.get("schema_version"):
+            problems.append(f"the registry says {layer!r} is schema {entry.get('schema_version')!r} but its database "
+                            f"says {row[2]!r}; rebuild it (build_indexes.py --system {layer})")
+            continue
+        if row[2] not in system_index.SUPPORTED_DEPENDENCY_SCHEMAS:
+            problems.append(f"{layer!r} is schema {row[2]!r}, which this builder cannot validate against (supported: "
+                            f"{', '.join(map(str, system_index.SUPPORTED_DEPENDENCY_SCHEMAS))}); rebuild it with this "
+                            f"code (build_indexes.py --system {layer})")
+            continue
+        depends_on[layer] = entry["build_id"]
+        dbs[layer] = path
+    if problems:
+        raise system_index.SystemIndexError(f"{cfg.module}: " + "; ".join(problems))
+    return depends_on, dbs
 
 
 def build_and_publish(root: Path, index_dir: Path, cfg_path: Path, build_vectors: bool) -> SystemBuild:
@@ -1037,11 +1225,13 @@ def build_and_publish(root: Path, index_dir: Path, cfg_path: Path, build_vectors
     result = SystemBuild(cfg.module)
     sdir = system_index.systems_dir(index_dir)
     sdir.mkdir(parents=True, exist_ok=True)
-    fingerprint = system_index.source_fingerprint(cfg)
+    reg_now = system_index.read_registry(sdir)
+    # One registry snapshot decides every dependency a layered module is validated against (legacy: none).
+    depends_on, dep_dbs = _dependency_snapshot(cfg, sdir, reg_now) if cfg.layered else ({}, {})
+    fingerprint = system_index.fingerprint(cfg, depends_on)
     build_id = system_index.new_build_id()
     tmp = system_index.temp_path(sdir, cfg.module, build_id)
     final = sdir / f"{cfg.module}.{build_id}.db"
-    reg_now = system_index.read_registry(sdir)
     live = None
     if cfg.module in reg_now["systems"]:
         try:
@@ -1050,21 +1240,27 @@ def build_and_publish(root: Path, index_dir: Path, cfg_path: Path, build_vectors
             live = None
     published = False
     try:
-        stats, counts = build_system_db(cfg, tmp, live, build_id, fingerprint, build_vectors)
-        after = system_index.source_fingerprint(system_index.load_system_cfg(cfg_path))
+        stats, counts = build_system_db(cfg, tmp, live, build_id, fingerprint, build_vectors, depends_on, dep_dbs)
+        after = system_index.fingerprint(system_index.load_system_cfg(cfg_path), depends_on)
         if after != fingerprint:
             raise system_index.SystemIndexError(
                 f"{cfg.module}: the config or sources changed during the build, so the database may not match "
                 f"its recorded fingerprint; nothing published — rebuild")
         with system_index.registry_lock(sdir):
             reg = system_index.read_registry(sdir)
+            moved = sorted(layer for layer, build in depends_on.items()
+                           if (reg["systems"].get(layer) or {}).get("build_id") != build)
+            if moved:
+                raise system_index.SystemIndexError(
+                    f"{cfg.module}: {', '.join(moved)} was rebuilt or removed during this build, so the relations "
+                    f"were validated against a superseded build; nothing published — rebuild")
             os.replace(tmp, final)
             reg["schema_version"] = system_index.SCHEMA_VERSION
-            reg["systems"][cfg.module] = {
+            entry = {
                 "module": cfg.module,
                 "db": final.name,
                 "build_id": build_id,
-                "schema_version": system_index.SCHEMA_VERSION,
+                "schema_version": cfg.schema_version,
                 "built_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
                 "module_dir": cfg.module_dir.relative_to(Path(root).resolve()).as_posix(),
                 "cfg": cfg.cfg_path.relative_to(Path(root).resolve()).as_posix(),
@@ -1072,6 +1268,11 @@ def build_and_publish(root: Path, index_dir: Path, cfg_path: Path, build_vectors
                 "source_fingerprint": fingerprint,
                 "counts": counts,
             }
+            if cfg.layered:
+                entry["layer"] = {"kind": cfg.effective_kind, "extends": cfg.extends, "depends_on": depends_on,
+                                  "manifest_sha256": cfg.manifest_sha256, "relations_sha256": cfg.relations_sha256,
+                                  "relations": len(cfg.relations)}
+            reg["systems"][cfg.module] = entry
             system_index.write_registry(sdir, reg)
             published = True
             # Collection is housekeeping: best-effort, and never able to undo a publication.
@@ -1106,15 +1307,16 @@ def _registry_names(sdir: Path, module: str, build_id: str, db_name: str) -> boo
     return isinstance(entry, dict) and entry.get("build_id") == build_id and entry.get("db") == db_name
 
 
-def prune_registry(root: Path, index_dir: Path) -> list:
+def prune_registry(root: Path, index_dir: Path, private_roots: tuple = ()) -> list:
     """Drop registry entries whose module no index.cfg claims any more, then collect their generations. The
-    registry's own cfg path is not trusted for this: only the Game_Systems tree decides what exists."""
+    registry's own cfg path is not trusted for this: only the Game_Systems tree and the declared private roots
+    decide what exists."""
     sdir = system_index.systems_dir(index_dir)
     if not (sdir / system_index.REGISTRY).exists():
         return []
     with system_index.registry_lock(sdir):
         reg = system_index.read_registry(sdir)
-        gone = [m for m in reg["systems"] if not system_index.cfgs_for(root, m)]
+        gone = [m for m in reg["systems"] if not system_index.cfgs_for(root, m, private_roots)]
         for m in gone:
             del reg["systems"][m]
         if gone:
@@ -1126,13 +1328,37 @@ def prune_registry(root: Path, index_dir: Path) -> list:
     return gone
 
 
-def run_systems(args, root: Path, index_dir: Path) -> int:
-    """--system / --all-systems. Builds only module databases; the corpus is untouched."""
+def _ordered_targets(paths: list) -> tuple:
+    """(cfg paths in dependency order, failures). Each config is loaded strictly so its dependencies are known; a
+    config that does not load, or a layer caught in a dependency cycle (with every layer depending on one), is
+    reported and left out — nothing is published for it."""
+    loaded, failures = [], 0
+    for p in paths:
+        try:
+            loaded.append((system_index.load_system_cfg(p), p))
+        except system_index.SystemIndexError as e:
+            failures += 1
+            print(f"\n[!] FAILED — nothing published for {p.parent.name}: {e}")
+    by_module = {c.module: p for c, p in loaded}
+    cfgs = [c for c, _ in loaded]
+    try:
+        return [by_module[c.module] for c in system_index.dependency_order(cfgs)], failures
+    except system_index.DependencyCycle as e:
+        stuck = set(e.members)
+        failures += len(stuck)
+        print(f"\n[!] FAILED — nothing published for {', '.join(sorted(stuck))}: {e}")
+        rest = [c for c in cfgs if c.module not in stuck]
+        return [by_module[c.module] for c in system_index.dependency_order(rest)], failures
+
+
+def run_systems(args, root: Path, index_dir: Path, private_roots: tuple = ()) -> int:
+    """--system / --all-systems. Builds only module databases; the corpus is untouched. --all-systems builds every
+    discovered module (Game_Systems and the private roots) in dependency order."""
     failures = 0
     if args.all_systems:
         targets = []
         claims = {}
-        for cfg_path in system_index.discover(root):
+        for cfg_path in system_index.discover(root, private_roots):
             claims.setdefault(system_index.declared_module(cfg_path) or cfg_path.parent.name.lower(), []).append(cfg_path)
         for module, paths in sorted(claims.items()):
             if len(paths) > 1:
@@ -1142,19 +1368,21 @@ def run_systems(args, root: Path, index_dir: Path) -> int:
             else:
                 targets.append(paths[0])
         if not claims:
-            print(f"No Game_Systems/*/index.cfg under {root}.")
+            print(f"No Game_Systems/*/index.cfg (or private-root layer) under {root}.")
+        targets, more = _ordered_targets(targets)
+        failures += more
     else:
         name = args.system.strip()
         if not system_index.SYSTEM_NAME.match(name):
             print(f"Error: invalid module name {name!r}")
             return 1
         try:
-            found = system_index.find_cfg(root, name)
+            found = system_index.find_cfg(root, name, private_roots)
         except system_index.SystemIndexError as e:
             print(f"Error: {e}")
             return 1
         if found is None:
-            print(f"Error: no Game_Systems/*/index.cfg for module {name!r}")
+            print(f"Error: no Game_Systems/*/index.cfg (or private-root layer) for module {name!r}")
             return 1
         targets = [found]
 
@@ -1198,7 +1426,7 @@ def run_systems(args, root: Path, index_dir: Path) -> int:
                     "vector_failed": s.vector_failed, "error_count": len(s.errors),
                     "invocation": _detect_invocation()})
     if args.all_systems:
-        gone = prune_registry(root, index_dir)
+        gone = prune_registry(root, index_dir, private_roots)
         if gone:
             print(f"\nUnregistered (index.cfg removed): {', '.join(gone)}")
     return 1 if failures else 0
@@ -1317,9 +1545,59 @@ def parse_args() -> argparse.Namespace:
     )
     which.add_argument(
         "--all-systems", action="store_true",
-        help="Build every module with a Game_Systems/*/index.cfg, and unregister modules whose index.cfg is gone."
+        help="Build every module with a Game_Systems/*/index.cfg (and every private-root layer), in dependency "
+             "order, and unregister modules whose index.cfg is gone."
+    )
+    which.add_argument(
+        "--relations", metavar="MODULE",
+        help="Read-only: report each relation a layered module declares, its pin state and the current hash of "
+             "its target (the value to put in target_sha256). Builds nothing."
     )
     return parser.parse_args()
+
+
+def relations_report(root: Path, index_dir: Path, module: str, private_roots: tuple = ()) -> list:
+    """Read-only. [(Relation, current target hash, pin state)] for a layered module, resolving its entries in its
+    own PUBLISHED database and its targets in theirs, from one registry snapshot. Raises SystemIndexError naming
+    what to build or fix first."""
+    found = system_index.find_cfg(root, module, private_roots)
+    if found is None:
+        raise system_index.SystemIndexError(f"no index.cfg for module {module!r}")
+    cfg = system_index.load_system_cfg(found)
+    if not cfg.layered:
+        raise system_index.SystemIndexError(f"{module} declares no relations or extends; there is nothing to report")
+    sdir = system_index.systems_dir(index_dir)
+    reg = system_index.read_registry(sdir)
+    entry = reg["systems"].get(module)
+    if entry is None:
+        raise system_index.SystemIndexError(f"{module} is not built; build it first (build_indexes.py --system "
+                                            f"{module}), or fix the errors that build reports")
+    own = system_index.resolve_db(sdir, module, entry)
+    _deps, dep_dbs = _dependency_snapshot(cfg, sdir, reg)
+    conn = sqlite3.connect(f"{own.as_uri()}?mode=ro", uri=True)
+    try:
+        return check_relations(cfg, conn, dep_dbs)
+    finally:
+        conn.close()
+
+
+def run_relations(args, root: Path, index_dir: Path, private_roots: tuple) -> int:
+    start = time.perf_counter()
+    try:
+        rows = relations_report(root, index_dir, args.relations.strip(), private_roots)
+    except system_index.SystemIndexError as e:
+        print(f"Error: {e}")
+        print(f"Runtime: {time.perf_counter() - start:.2f}s")
+        return 1
+    for r, current, state in rows:
+        print(f"item {r.index}: {r.entry.label()} --{r.mode}/{r.status}--> {r.target.label()}")
+        print(f"  pin: {state}   current target_sha256: {current}")
+        if r.decider:
+            print(f"  decider (self-declared): {r.decider}, {r.decided}")
+    print(f"{len(rows)} relation(s); {sum(1 for _r, _c, s in rows if s != 'pinned')} not pinned to the current "
+          f"target")
+    print(f"Runtime: {time.perf_counter() - start:.2f}s")
+    return 0
 
 
 def main() -> int:
@@ -1340,10 +1618,21 @@ def main() -> int:
     except ValueError as e:
         print(f"Error: {e}")
         return 1
+    try:
+        private_roots = parse_private_roots(cfg, root)
+    except system_index.SystemIndexError as e:
+        print(f"Error: [rules_layers] in {Path(args.cfg).name}: {e}")
+        return 1
+
+    if args.relations:
+        code = run_relations(args, root, index_dir, private_roots)
+        if not args.no_pause:
+            input("\nPress Enter to exit...")
+        return code
 
     # Module databases are a separate build: an ordinary run (the lore refresh) never rebuilds rulebooks.
     if args.system or args.all_systems:
-        code = run_systems(args, root, index_dir)
+        code = run_systems(args, root, index_dir, private_roots)
         if not args.no_pause:
             input("\nPress Enter to exit...")
         return code
@@ -1364,6 +1653,7 @@ def main() -> int:
     dir_entries, search_files = walk_and_collect(
         root, dir_excluded, dir_shallow,
         search_excluded, file_mode, file_patterns,
+        search_excluded_prefixes=private_roots,
     )
     walk_s = time.perf_counter() - walk_start
 

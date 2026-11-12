@@ -39,6 +39,8 @@ Command line arguments:
 # changed 2026-10-18: created (chain-aware search stage 1, Codex 938).
 # changed 2026-10-18: regression tests for Codex 940's three findings (lore as a private root; a misspelled
 #   [rules_layers] section failing open; unsupported or disagreeing dependency schemas).
+# changed 2026-11-12: stage 2 added the not_searched key: the strictness test now expects it to name a known module,
+#   and an empty section to be refused as declaring neither key.
 """
 
 import argparse
@@ -249,11 +251,14 @@ class TestPrivateRoots(Tmp):
     def test_a_present_section_is_strict(self):
         cases = {
             "private_root = World_Building/Rules_Layers\n": "unknown key 'private_root'",      # Codex 940's repro
-            "private_roots = World_Building/Rules_Layers\nnot_searched = baseline\n": "unknown key 'not_searched'",
+            # Stage 2 added not_searched; it must name a known module (none exists in this fixture).
+            "private_roots = World_Building/Rules_Layers\nnot_searched = baseline\n": "not_searched names 'baseline', "
+                                                                                     "which is no known module",
             "World_Building/Rules_Layers/\n": "is not key = value (write: private_roots = World_Building/Rules_Layers)",
             "private_roots =\n": "private_roots names no folder",
             "private_roots = , ,\n": "private_roots names no folder",
-            "": "private_roots names no folder",
+            "not_searched =\n": "not_searched names no module",
+            "": "declares neither private_roots nor not_searched",
         }
         for body, why in cases.items():
             with self.subTest(body=body):

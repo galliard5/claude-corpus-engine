@@ -64,6 +64,9 @@ Replaces: build_directory_indexes.py + build_search_index.py
 #   bare line or an empty private_roots fails the build instead of silently disabling the exclusion); an existing
 #   private root may hold only layer folders (system_index); a dependency's schema must be supported and agree
 #   between the registry and its database.
+# changed 2026-11-12: chain-aware search stage 2 — the [rules_layers] section is parsed by the shared
+#   system_index.parse_rules_layers, which also accepts not_searched (known module ids, case-insensitive); a section
+#   may declare either key, and each key present must name something.
 
 Usage:
     python build_indexes.py                   # reads indexer.cfg, writes all outputs
@@ -227,26 +230,14 @@ def parse_private_roots(cfg: dict, root: Path) -> tuple:
     """[rules_layers] private_roots: a comma list of corpus-relative folders holding the user's own rules layers.
 
     No [rules_layers] section means no roots: every output is then exactly what it was before layers existed. A
-    section that IS present is strict, so a typo can never silently switch the exclusion off: a key other than
-    private_roots (e.g. the singular private_root), a line that is not key = value, a missing or empty
-    private_roots — each raises SystemIndexError naming the problem and the fix. The roots themselves are validated
-    by system_index.validate_private_roots. Only this section is strict; the rest of the cfg is read as before."""
-    if "rules_layers" not in cfg:
-        return ()
-    section = cfg["rules_layers"]
-    settings = section.get("settings", {})
-    problems = [f"line {p!r} is not key = value (write: private_roots = {p.strip().rstrip('/')})"
-                for p in section.get("patterns", [])]
-    for key in sorted(set(settings) - set(system_index.RULES_LAYERS_KEYS)):
-        problems.append(f"unknown key {key!r} (the only key is private_roots)")
-    raw = settings.get("private_roots")
-    roots = [r for r in str(raw if raw is not None else "").split(",") if r.strip()]
-    if not roots:
-        problems.append("private_roots names no folder; name at least one (e.g. private_roots = "
-                        "World_Building/Rules_Layers), or remove the [rules_layers] section")
-    if problems:
-        raise system_index.SystemIndexError("; ".join(problems))
-    return system_index.validate_private_roots(root, roots)
+    section that IS present is strict, so a typo can never silently switch the exclusion off: an unknown key (e.g.
+    the singular private_root), a line that is not key = value, a key present but empty, or a section declaring
+    neither key — each raises SystemIndexError naming the problem and the fix. The roots themselves are validated
+    by system_index.validate_private_roots, and not_searched names by known_modules. Only this section is strict;
+    the rest of the cfg is read as before."""
+    # The whole section is parsed and validated here (system_index.parse_rules_layers), not_searched included, so a
+    # build and the search server can never disagree about it; the builder itself uses only the private roots.
+    return system_index.parse_rules_layers(cfg, root)[0]
 
 
 def parse_file_types(cfg: dict) -> tuple[str, list[str]]:

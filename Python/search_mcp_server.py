@@ -59,6 +59,11 @@ changed 2026-09-24: game-system module databases. search_corpus, get_section
     schema 1 (Python/test_system_index.py proves it on the same inputs); an
     index still at schema 1 gets a "rebuild" message instead of a SQL error.
 
+changed 2026-11-12: chain-aware search stage 2 — index_status(campaign=... | chain=...)
+  reports how a rules chain resolves (rules_chain.py): each layer's role, build and
+  freshness, the snapshot token, the adaptation profile and sidecars, and why a
+  chain search would refuse. Read-only. system= and the corpus status are unchanged.
+
 changed 2026-09-25: records with no source of their own but row references
     (see system_index.py) show "Source (via row reference): <file> #<anchors> —
     row line(s) N  (<index record>)", one line per table on get_system_record and
@@ -81,6 +86,9 @@ from mcp.server.fastmcp import FastMCP
 # aren't installed; vector/hybrid modes then degrade to fts with a note.
 import embedding
 import system_index
+from cfg_loader import load_cfg
+# rules_chain is imported where it is used (_chain_status), so a deployment whose image does not carry it yet loses
+# only the chain status, never the server.
 
 # CORPUS_ROOT env var allows Docker to override the path without editing this file.
 # Falls back to the local Windows path when not set.
@@ -99,6 +107,9 @@ _REPRESENTATIONS = system_index.REPRESENTATIONS
 # from CORPUS_ROOT. The two agree in both deployments (host and the /corpus
 # mount) because the layout is fixed — same lockstep obligation as DB_PATH.
 HISTORY_PATH = _CORPUS_ROOT / "Python" / "build_history.jsonl"
+# The corpus config, read ONLY for its [rules_layers] section (private layer roots, not_searched), by the chain
+# status. A fixed path from CORPUS_ROOT, never derived from a tool argument; same lockstep obligation as above.
+RULES_CFG_PATH = _CORPUS_ROOT / "Python" / "indexer.cfg"
 # The log is append-only and one record is a few hundred bytes; reading the
 # tail bounds the work regardless of how long the history gets.
 _HISTORY_TAIL_BYTES = 64 * 1024
@@ -1330,14 +1341,73 @@ def _system_status(system: str) -> str:
     ])
 
 
+def _chain_status(campaign: str | None, chain: str | None) -> str:
+    """index_status(campaign=... | chain=...): the resolved rules chain, read-only (rules_chain.resolve)."""
+    try:
+        import rules_chain
+    except ImportError as e:
+        return f"[!] Chain status is unavailable in this deployment ({e}); the image needs rules_chain.py."
+    try:
+        rules_cfg = load_cfg(RULES_CFG_PATH) if RULES_CFG_PATH.exists() else {}
+    except Exception as e:                                   # an unreadable config refuses; it never means "none"
+        return f"[!] Chain refused — the corpus config {RULES_CFG_PATH.name} cannot be read: {e}"
+    res = rules_chain.resolve(_CORPUS_ROOT, SYSTEMS_DIR.parent, rules_cfg, campaign=campaign, chain=chain)
+    what = (f"campaign {res.campaign}" + (f" ({res.profile})" if res.profile else "")
+            if res.selector == "campaign" else "explicit chain")
+    lines = []
+    if res.refused:
+        lines += [f"[!] Chain refused — {len(res.refusals)} problem(s); a chain search would not run:"]
+        lines += [f"    - {r}" for r in res.refusals]
+        lines += [""]
+    lines += [f"Rules chain status: {what}"]
+    if res.layers:
+        lines += ["  Chain (lowest first): " + " -> ".join(l.module or l.given for l in res.layers),
+                  "  Layers:"]
+        for i, l in enumerate(res.layers, 1):
+            name = l.module or l.given
+            if l.role == rules_chain.ROLE_INDEXED:
+                fresh = ("sources unchanged since the build" if l.freshness == "unchanged" else
+                         "[!] SOURCES CHANGED since the build" if l.freshness == "CHANGED" else
+                         f"[!] sources {l.freshness}")
+                lines.append(f"    {i}. {name}: indexed — build {l.build_id}, schema {l.schema}, built {l.built_at}; "
+                             f"{fresh}")
+            elif l.role == rules_chain.ROLE_LOADED:
+                lines.append(f"    {i}. {name}: {l.role} — {l.reason}")
+            else:
+                lines.append(f"    {i}. {name}: [!] MISSING — {l.reason}")
+            lines += [f"       [!] {n}" for n in l.notes]
+        lines.append(f"  Snapshot:   {res.token}  (the registry, read once; "
+                     f"{sum(l.role == rules_chain.ROLE_INDEXED for l in res.layers)} indexed layer(s))")
+        lines.append(f"  Adaptation: {res.adaptation.status}")
+        if res.selector == "campaign":
+            if res.sidecars:
+                lines.append("  Sidecars (declared loaded, not searched):")
+                lines += [f"    - {s.path or s.given}: " + (f"sha256 {s.sha256}" if s.exists else "[!] MISSING")
+                          for s in res.sidecars]
+            else:
+                lines.append("  Sidecars:   none declared")
+        lines.append("  Retrieval:  " + ("adaptation inputs current" if res.authoritative_inputs else
+                                         "[!] NON-AUTHORITATIVE — the chain's adaptation inputs are not current"))
+    if res.warnings:
+        lines += ["  Warnings:"] + [f"    [!] {w}" for w in res.warnings]
+    return "\n".join(lines)
+
+
 @mcp.tool()
-def index_status(system: str | None = None) -> str:
-    """Report the current state of the search index, or of one game-system module's database.
+def index_status(system: str | None = None, campaign: str | None = None, chain: str | None = None) -> str:
+    """Report the current state of the search index, or of one game-system module's database, or of a rules chain.
 
     With `system`, reports that module's published build, its row counts, whether
     the registry and database agree, and — recomputed from the module's own files,
     not trusted from the build — whether its sources have changed since. Without
     it, reports the corpus and lists the registered module databases.
+
+    With `campaign` (a campaign folder name) or `chain` (layer names, lowest first,
+    comma-separated), reports how that rules chain resolves: each layer's role
+    (indexed, declared loaded and not searched, or missing), build and source
+    freshness, the database snapshot token, the adaptation profile's state and the
+    declared sidecars — and why a chain search would refuse, when it would.
+    Read-only; it searches nothing. Give at most one of system, campaign or chain.
 
     Returns the database path, total indexed files, vector-lane availability,
     and last-built timestamp. Useful for checking whether the index is stale or
@@ -1349,6 +1419,10 @@ def index_status(system: str | None = None) -> str:
     healthy" and "is it getting slower" are answered with evidence rather than a
     bare timestamp. Absent or unreadable history is silently omitted.
     """
+    if sum(x is not None for x in (system, campaign, chain)) > 1:
+        return "[!] Give at most one of system, campaign or chain."
+    if campaign is not None or chain is not None:
+        return _chain_status(campaign, chain)
     if system:
         return _system_status(system)
     if not DB_PATH.exists():

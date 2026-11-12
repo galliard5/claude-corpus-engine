@@ -16,6 +16,10 @@ Command line arguments:
 # changed 2026-10-18: created (chain-aware search stage 1, Codex 938).
 # changed 2026-10-18: mutants for the Codex 940 fixes (root contents, the strict [rules_layers] section, dependency
 #   schemas).
+# changed 2026-11-12: stage 2 moved the [rules_layers] parsing into system_index.parse_rules_layers; its three
+#   mutants now target it there, and a fourth checks the builder still delegates to it.
+# changed 2026-11-12: Codex 951 made discover contained; the "private roots ignored" mutant was repointed at its new
+#   loop head (same mutation: discovery over Game_Systems only).
 """
 
 import io
@@ -116,19 +120,25 @@ MUTANTS = [
     ("roots: a file declared as a root accepted", "si",
      '    if not root_dir.is_dir():\n        return [f"private root {raw!r} is a file, not a folder"]',
      '    if False:\n        return [f"private root {raw!r} is a file, not a folder"]'),
-    ("cfg: a misspelled key accepted", "bi",
-     "    for key in sorted(set(settings) - set(system_index.RULES_LAYERS_KEYS)):",
+    # Since stage 2 the [rules_layers] section is parsed by system_index.parse_rules_layers (shared with the server).
+    ("cfg: a misspelled key accepted", "si",
+     "    for key in sorted(set(settings) - set(RULES_LAYERS_KEYS)):",
      "    for key in []:"),
-    ("cfg: a bare line accepted", "bi",
+    ("cfg: a bare line accepted", "si",
      "                for p in section.get(\"patterns\", [])]", "                for p in []]"),
-    ("cfg: an empty declaration accepted", "bi", "    if not roots:\n        problems.append(",
-     "    if False:\n        problems.append("),
+    ("cfg: an empty declaration accepted", "si", '    if "private_roots" in lists and not lists["private_roots"]:',
+     "    " + OFF),
+    ("cfg: the builder does not use the shared parser", "bi",
+     "    return system_index.parse_rules_layers(cfg, root)[0]",
+     '    return system_index.validate_private_roots(root, [r for r in str(cfg.get("rules_layers", {}).get('
+     '"settings", {}).get("private_roots", "") or "").split(",") if r.strip()])'),
     ("build: an unsupported dependency schema accepted", "bi",
      "        if row[2] not in system_index.SUPPORTED_DEPENDENCY_SCHEMAS:", "        " + OFF),
     ("build: a registry/database schema disagreement accepted", "bi",
      '        if row[2] != entry.get("schema_version"):', "        " + OFF),
-    ("discovery: private roots ignored", "si", "    for base in _layer_bases(root, private_roots):",
-     "    for base in _layer_bases(root, ()):"),
+    ("discovery: private roots ignored", "si",
+     "    found = []\n    for base in _layer_bases(root, private_roots):",
+     "    found = []\n    for base in _layer_bases(root, ()):"),
     ("order: dependencies ignored", "si",
      "    pending = {c.module: {d for d in c.dependencies() if d in by_id} for c in cfgs}",
      "    pending = {c.module: set() for c in cfgs}"),

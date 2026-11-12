@@ -67,6 +67,16 @@ a whole document, one section of it, or one dataset record, read from the target
 #   (chain-aware search stage 1; design: Working_Documents/Chain_Search_Design_Proposal_v2.md, Codex 936/938).
 #   Review fix (Codex 940): an existing private root may hold only rules-layer folders, so existing lore cannot be
 #   declared one and hidden from lore search.
+# changed 2026-11-12: chain-aware search stage 2 — known_modules (every module, indexed or not, by its
+#   folder-named manifest), parse_rules_layers (the strict [rules_layers] section, shared by the builder and the
+#   server, now with not_searched), and check_publication (a read-only registry/database consistency check).
+# changed 2026-11-12: Codex 947 — known_modules identifies an indexable folder by its index.cfg's declared id, with
+#   the builder's conflict rule; the folder-named manifest is the fallback for folders without one.
+# changed 2026-11-12: Codex 949 — known_modules is contained: a discovery root, module folder, index.cfg or manifest
+#   that resolves out of the corpus (or its root/folder) is never listed or read.
+# changed 2026-11-12: Codex 951 — builder-side containment: discover (behind cfgs_for, find_cfg, --all-systems and
+#   pruning) offers no root, module folder or index.cfg that leads out; load_system_cfg never opens an index.cfg,
+#   manifest or relations.yaml that resolves outside its module folder.
 """
 
 import fnmatch
@@ -105,7 +115,7 @@ SUPPORTED_DEPENDENCY_SCHEMAS = (SCHEMA_VERSION, SCHEMA_LAYERED)
 # Besides layer folders and dotfiles, the only file an existing private layer root may hold.
 LAYER_ROOT_ALLOWED_FILES = ("readme.md",)
 # The keys the corpus config's [rules_layers] section may hold.
-RULES_LAYERS_KEYS = ("private_roots",)
+RULES_LAYERS_KEYS = ("private_roots", "not_searched")
 # The heading rules get_section uses (search_mcp_server); kept identical so a relation selects the section a reader
 # fetches. test_layers checks the two implementations agree.
 _ATX_RE = re.compile(r"^(#{1,6})[ \t]+(\S.*?)[ \t]*#*$")
@@ -273,9 +283,17 @@ def _layer_fields(data: dict, module: str, manifest_name: str, has_relations: bo
 
 
 def load_system_cfg(cfg_path) -> SystemCfg:
-    """Parse and validate a module's index.cfg strictly. Raises SystemIndexError on any problem."""
+    """Parse and validate a module's index.cfg strictly. Raises SystemIndexError on any problem.
+
+    CONTAINMENT (Codex 951). The index.cfg, the module's manifest and its relations.yaml must each resolve inside the
+    module folder, links followed, before they are read; one that leads out is never opened and fails validation,
+    so a build refuses before publishing and a freshness check reports it. Representation files were already held
+    inside the module (collect)."""
     cfg_path = Path(cfg_path)
     where = f"{cfg_path.parent.name}/{cfg_path.name}"
+    if not _inside(cfg_path, cfg_path.parent):
+        raise SystemIndexError(f"{where} resolves outside its module folder (through a link); it is not read — "
+                               f"replace the link with the file itself")
     try:
         cfg = load_cfg(cfg_path, strict=True)
     except (CfgError, FileNotFoundError) as e:
@@ -297,9 +315,16 @@ def load_system_cfg(cfg_path) -> SystemCfg:
     layer_kind = layer_extends = ""      # not `kind`: the representation loop below reuses that name
     relations, relations_path = [], None
     if (module_dir / RELATIONS_FILE).is_file():
-        relations_path = module_dir / RELATIONS_FILE
+        if _inside(module_dir / RELATIONS_FILE, module_dir):
+            relations_path = module_dir / RELATIONS_FILE
+        else:
+            problems.append(f"{RELATIONS_FILE} resolves outside the module (through a link); it is not read — replace "
+                            f"the link with the file itself")
     if module and not SYSTEM_NAME.match(module):
         problems.append(f"module id {module!r} must match {SYSTEM_NAME.pattern}")
+    elif module and not _inside(module_dir / f"{module}.md", module_dir):
+        problems.append(f"the manifest {module}.md resolves outside the module (through a link); it is not read — "
+                        f"replace the link with the file itself")
     elif module:
         data = _read_manifest(module_dir / f"{module}.md")
         declared = (str(data.get("module")) if data is not None and data.get("module") is not None else None)
@@ -773,17 +798,160 @@ def validate_private_roots(root: Path, raw_roots) -> tuple:
     return tuple(out)
 
 
+def known_modules(root: Path, private_roots=()) -> tuple:
+    """({module id: module directory}, ambiguous ids) for every module the corpus holds, indexed or not. The
+    module's manifest is always <directory>/<id>.md.
+
+    Folders directly under Game_Systems/ and each private root are read in one of two ways:
+      - A folder WITH an index.cfg is an indexable module, identified exactly as the builder identifies it: its id is
+        the one the index.cfg declares (declared_module), which must match SYSTEM_NAME, and its <id>.md manifest must
+        hold a fenced YAML block declaring that same `module:` (load_system_cfg's rule). The folder's name plays no
+        part in the id, so Display_Name/index.cfg declaring stable_id is the module stable_id.
+      - A folder WITHOUT one is a legacy module only when its manifest is <folder name in lower case>.md with a fenced
+        YAML block (Baseline/baseline.md, DnD5e/dnd5e.md); a manifest that also declares `module:` must declare that
+        same id.
+    A folder that satisfies neither is not a module, and its id is never guessed.
+
+    Conflicts follow the builder's find_cfg: an index.cfg claims both the id it declares and its folder's name
+    (cfgs_for), and a legacy folder claims its id. An id claimed by more than one folder — within one tree or across
+    Game_Systems and the private roots — is ambiguous, is never resolved to any of them, and is returned in the second
+    element. A claim by an invalid index.cfg still counts, because the builder would also see it.
+
+    CONTAINMENT. Nothing outside the corpus is opened, with links and junctions followed: a discovery root must
+    resolve inside the corpus, a module folder inside its discovery root, and its index.cfg and manifest inside that
+    folder, each checked before it is listed or read. A folder that leads out is not a module and claims nothing; an
+    index.cfg or manifest that leads out is never read, so its folder is not a module (an escaping index.cfg still
+    lets the folder claim its own name, which needs no read)."""
+    claims, valid = {}, {}
+    for base in _layer_bases(root, private_roots):
+        if not base.is_dir() or not _inside(base, Path(root)):
+            continue
+        base_r = base.resolve()
+        for d in sorted(base.iterdir(), key=lambda p: p.name.lower()):
+            if not d.is_dir() or not _inside(d, base_r):
+                continue
+            folder, where = d.name.lower(), d.resolve()
+            if (d / "index.cfg").is_file():
+                declared = declared_module(d / "index.cfg") if _inside(d / "index.cfg", where) else None
+                for i in {folder, declared} - {None}:
+                    if SYSTEM_NAME.match(i):
+                        claims.setdefault(i, set()).add(where)
+                if declared is None or not SYSTEM_NAME.match(declared) or not _inside(d / f"{declared}.md", where):
+                    continue
+                data = _read_manifest(d / f"{declared}.md")
+                if data is not None and data.get("module") is not None and str(data.get("module")) == declared:
+                    valid[declared] = where
+                continue
+            if not SYSTEM_NAME.match(folder) or not _inside(d / f"{folder}.md", where):
+                continue
+            data = _read_manifest(d / f"{folder}.md")
+            if data is None or (data.get("module") is not None and str(data.get("module")) != folder):
+                continue
+            claims.setdefault(folder, set()).add(where)
+            valid[folder] = where
+    ambiguous = {i for i, dirs in claims.items() if len(dirs) > 1}
+    return {i: d for i, d in valid.items() if i not in ambiguous}, ambiguous
+
+
+def parse_rules_layers(cfg: dict, root: Path) -> tuple:
+    """(private roots, not-searched module ids) from the corpus config's [rules_layers] section.
+
+    No section means neither: every output is then exactly what it was before layers existed. A section that IS
+    present is strict, so a typo can never silently switch a guarantee off: a key other than private_roots and
+    not_searched, a line that is not key = value, a key present but empty, or a section declaring neither, each
+    raises SystemIndexError naming the problem and the fix. private_roots is validated by validate_private_roots;
+    not_searched must name known modules (known_modules), case-insensitively, each once. A not-searched module is
+    DECLARED loaded and not searched: nothing can verify that a caller has it in context."""
+    if "rules_layers" not in cfg:
+        return (), ()
+    section = cfg["rules_layers"]
+    settings = section.get("settings", {})
+    problems = [f"line {p!r} is not key = value (write: private_roots = {p.strip().rstrip('/')})"
+                for p in section.get("patterns", [])]
+    for key in sorted(set(settings) - set(RULES_LAYERS_KEYS)):
+        problems.append(f"unknown key {key!r} (the keys are {' and '.join(RULES_LAYERS_KEYS)})")
+    lists = {}
+    for key in RULES_LAYERS_KEYS:
+        if key in settings:
+            lists[key] = [x.strip() for x in str(settings[key] if settings[key] is not None else "").split(",")
+                          if x.strip()]
+    if "private_roots" in lists and not lists["private_roots"]:
+        problems.append("private_roots names no folder; name at least one (e.g. private_roots = "
+                        "World_Building/Rules_Layers), or remove the key")
+    if "not_searched" in lists and not lists["not_searched"]:
+        problems.append("not_searched names no module; name at least one (e.g. not_searched = baseline), or remove "
+                        "the key")
+    if not lists and not problems:
+        problems.append("[rules_layers] declares neither private_roots nor not_searched; declare one, or remove the "
+                        "section")
+    if problems:
+        raise SystemIndexError("; ".join(problems))
+    private = validate_private_roots(root, lists.get("private_roots", []))
+    names = [n.lower() for n in lists.get("not_searched", [])]
+    known, ambiguous = known_modules(root, private)
+    bad = []
+    for n in sorted(set(names)):
+        if names.count(n) > 1:
+            bad.append(f"not_searched names {n!r} twice")
+        if n in ambiguous:
+            bad.append(f"not_searched names {n!r}, which more than one folder declares")
+        elif n not in known:
+            bad.append(f"not_searched names {n!r}, which is no known module (known: {', '.join(sorted(known)) or 'none'})")
+    if bad:
+        raise SystemIndexError("; ".join(bad))
+    return private, tuple(dict.fromkeys(names))
+
+
+def check_publication(sdir: Path, module: str, entry: dict) -> tuple:
+    """(database path, {build_id, module, schema_version}, None) when a registry entry names a present generation
+    whose own db_info agrees with it (build id, module, schema) and whose schema this code reads
+    (SUPPORTED_DEPENDENCY_SCHEMAS); otherwise (None, None, why). Read-only."""
+    try:
+        path = resolve_db(sdir, module, entry)
+    except SystemIndexError as e:
+        return None, None, str(e)
+    if not path.exists():
+        return None, None, f"its database {path.name} is missing; rebuild it (build_indexes.py --system {module})"
+    import sqlite3
+    try:
+        conn = sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True)
+        try:
+            row = conn.execute("SELECT build_id, module, schema_version FROM db_info LIMIT 1").fetchone()
+        finally:
+            conn.close()
+    except sqlite3.Error as e:
+        return None, None, f"its database cannot be read ({e}); rebuild it (build_indexes.py --system {module})"
+    if row is None or row[0] != entry.get("build_id") or row[1] != module:
+        return None, None, (f"its database does not match the registry (a stale or wrong publication); rebuild it "
+                            f"(build_indexes.py --system {module})")
+    if row[2] != entry.get("schema_version"):
+        return None, None, (f"the registry says schema {entry.get('schema_version')!r} but its database says "
+                            f"{row[2]!r}; rebuild it (build_indexes.py --system {module})")
+    if row[2] not in SUPPORTED_DEPENDENCY_SCHEMAS:
+        return None, None, (f"its schema {row[2]!r} is not one this code reads "
+                            f"({', '.join(map(str, SUPPORTED_DEPENDENCY_SCHEMAS))}); rebuild it")
+    return path, {"build_id": row[0], "module": row[1], "schema_version": row[2]}, None
+
+
 def _layer_bases(root: Path, private_roots=()) -> list:
     return [Path(root) / "Game_Systems"] + [Path(root) / r for r in private_roots]
 
 
 def discover(root: Path, private_roots=()) -> list:
     """Every Game_Systems/<dir>/index.cfg, and every <private root>/<dir>/index.cfg, one level deep, in a stable
-    order. With no private roots this is exactly the original discovery."""
+    order. With no private roots and no links leading out, this is exactly the original discovery.
+
+    CONTAINMENT (Codex 951). Every builder lookup goes through here (cfgs_for, find_cfg, --all-systems, pruning), so
+    nothing outside the corpus is ever offered to a reader: a discovery root must resolve inside the corpus, a module
+    folder inside its discovery root, and its index.cfg inside that folder, links and junctions followed. Anything
+    that leads out is left out, before any config is read, and is treated as absent."""
     found = []
     for base in _layer_bases(root, private_roots):
-        if base.is_dir():
-            found += sorted(base.glob("*/index.cfg"))
+        if not base.is_dir() or not _inside(base, Path(root)):
+            continue
+        base_r = base.resolve()
+        found += [p for p in sorted(base.glob("*/index.cfg"))
+                  if _inside(p.parent, base_r) and _inside(p, p.parent.resolve())]
     return found
 
 

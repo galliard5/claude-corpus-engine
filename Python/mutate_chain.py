@@ -19,6 +19,8 @@ Command line arguments:
 #   module identity, adaptation coverage, path safety and registry-entry shape.
 # changed 2026-11-12: Codex 949 — mutants for discovery containment, the freshness cfg source and null entries.
 # changed 2026-11-12: Codex 951 — mutants for the builder's discovery and the shared loader's containment.
+# changed 2026-11-12: stage 3 (Codex 955) — the unreadable-config mutant repointed: the line moved, unchanged in
+#   effect, into search_mcp_server._resolve_chain, which the chain status and the chain search share.
 """
 
 import io
@@ -232,7 +234,7 @@ MUTANTS = [
      "    if campaign is not None or chain is not None:\n        return _chain_status(campaign, chain)",
      "    if False:\n        return _chain_status(campaign, chain)"),
     ("server: an unreadable config taken as none", "srv",
-     '        return f"[!] Chain refused — the corpus config {RULES_CFG_PATH.name} cannot be read: {e}"',
+     '        return None, f"[!] Chain refused — the corpus config {RULES_CFG_PATH.name} cannot be read: {e}"',
      "        rules_cfg = {}"),
     ("server: the refusal banner dropped", "srv", '    if res.refused:\n        lines += [f"[!] Chain refused',
      '    if False:\n        lines += [f"[!] Chain refused'),

@@ -77,6 +77,9 @@ a whole document, one section of it, or one dataset record, read from the target
 # changed 2026-11-12: Codex 951 — builder-side containment: discover (behind cfgs_for, find_cfg, --all-systems and
 #   pruning) offers no root, module folder or index.cfg that leads out; load_system_cfg never opens an index.cfg,
 #   manifest or relations.yaml that resolves outside its module folder.
+# changed 2026-11-13: Codex 961 — containment at the open of a published generation: contained_real and
+#   open_contained (resolve with links and junctions followed, open the resolved file, re-check once open), used by
+#   check_publication and, through the server's _snapshot_generation, by every server-side module open.
 """
 
 import fnmatch
@@ -905,7 +908,8 @@ def parse_rules_layers(cfg: dict, root: Path) -> tuple:
 def check_publication(sdir: Path, module: str, entry: dict) -> tuple:
     """(database path, {build_id, module, schema_version}, None) when a registry entry names a present generation
     whose own db_info agrees with it (build id, module, schema) and whose schema this code reads
-    (SUPPORTED_DEPENDENCY_SCHEMAS); otherwise (None, None, why). Read-only."""
+    (SUPPORTED_DEPENDENCY_SCHEMAS); otherwise (None, None, why). Read-only. The generation is opened through
+    open_contained, so a file that has become a link leading out of index/systems is refused, never read."""
     try:
         path = resolve_db(sdir, module, entry)
     except SystemIndexError as e:
@@ -914,7 +918,9 @@ def check_publication(sdir: Path, module: str, entry: dict) -> tuple:
         return None, None, f"its database {path.name} is missing; rebuild it (build_indexes.py --system {module})"
     import sqlite3
     try:
-        conn = sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True)
+        conn, why = open_contained(path, sdir, lambda real: sqlite3.connect(f"{real.as_uri()}?mode=ro", uri=True))
+        if conn is None:                    # containment enforced at the open itself
+            return None, None, f"its database {why}"
         try:
             row = conn.execute("SELECT build_id, module, schema_version FROM db_info LIMIT 1").fetchone()
         finally:
@@ -1205,6 +1211,40 @@ def resolve_db(sdir: Path, module: str, entry: dict) -> Path:
         raise SystemIndexError(f"registry entry for {module!r} names {name!r}, which is outside index/systems or "
                                f"not a generation of that module")
     return target
+
+
+# Why open_contained refused a file that resolved inside sdir before the open but not to the same file after it.
+CHANGED_DURING_OPEN = "changed while being opened, so nothing was read from it"
+
+
+def contained_real(path: Path, sdir: Path) -> tuple:
+    """(its real path, None) when a generation file still resolves inside sdir, links and junctions followed;
+    otherwise (None, why), `why` a phrase without its subject ("now resolves outside index/systems …").
+
+    CONTAINMENT AT THE OPEN (Codex 957, 959, 961). resolve_db checks the name a registry entry gives, but the file can
+    become a link leading out of index/systems between that check and the open. So every reader of a published
+    generation calls this immediately before the open, opens the real path it returns, and calls it again once the
+    file is open, before anything is read: open_contained does all three."""
+    try:
+        real = Path(path).resolve(strict=True)
+    except OSError as e:
+        return None, f"can no longer be opened ({e})"
+    if not _inside(real, Path(sdir)):
+        return None, "now resolves outside index/systems (through a link or junction), so it was not opened"
+    return real, None
+
+
+def open_contained(path: Path, sdir: Path, opener) -> tuple:
+    """(connection, None), or (None, why): opener(real path) runs only once contained_real accepts the file, and the
+    connection is closed unread when the file no longer resolves to the same place once open (CHANGED_DURING_OPEN)."""
+    real, why = contained_real(path, sdir)
+    if real is None:
+        return None, why
+    conn = opener(real)
+    if contained_real(path, sdir)[0] != real:
+        conn.close()
+        return None, CHANGED_DURING_OPEN
+    return conn, None
 
 
 def collect_garbage(sdir: Path, reg: dict) -> list:

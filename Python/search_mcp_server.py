@@ -13,9 +13,13 @@ Three retrieval modes (the `mode` arg):
     "hybrid"  fuses fts + vector with Reciprocal Rank Fusion
 
 The database path is hardcoded and opened read-only. The server has no SQL
-passthrough, and the only file it reads outside the index database is
-build_history.jsonl, at a fixed path, for index_status alone — nothing
-reachable through a tool argument addresses the filesystem. get_section takes a `path`, but it is
+passthrough, and outside the index databases it reads only build_history.jsonl,
+at a fixed path, for index_status, and — for a chain (index_status or
+search_corpus with campaign= or chain=) — indexer.cfg's [rules_layers] section,
+the campaign's profile, its adaptation profile and sidecars, and each layer's
+manifest and index.cfg, every one resolved by rules_chain inside the corpus with
+links and junctions followed, and module databases only through the registry.
+No tool argument is ever used as a path. get_section takes a `path`, but it is
 an index key, not a filesystem path: it is matched for equality against
 corpus_fts.path and the body is served from the stored `content` column, so
 nothing outside the index is addressable and no traversal is possible.
@@ -63,6 +67,33 @@ changed 2026-11-12: chain-aware search stage 2 — index_status(campaign=... | c
   reports how a rules chain resolves (rules_chain.py): each layer's role, build and
   freshness, the snapshot token, the adaptation profile and sidecars, and why a
   chain search would refuse. Read-only. system= and the corpus status are unchanged.
+
+changed 2026-11-12: chain-aware search stage 3 — search_corpus(campaign=... | chain=...,
+  per_layer=...) searches each indexed layer's own database from the chain's ONE registry
+  snapshot (never a generation published after it resolved), groups hits by layer, most
+  specific first, with no cross-database score comparison, allocates within limit and
+  per_layer (refusing, with the smallest workable limit, when limit cannot give every layer
+  with a hit one slot), and annotates each hit with the relations layers DECLARED about it
+  and their status. get_section and get_system_record take expected_build: a hit's Fetch
+  line names its module and build, and a superseded build is refused, never answered from
+  its replacement. The fetch tools read schema 3; single-system search and status still
+  read schema 2 only and point a layered module at chain=. Calls without the new
+  parameters are byte-identical (test_chain_search runs the committed server beside them).
+
+changed 2026-11-12: Codex 957 — a chain search enforces containment at the open itself: a
+  snapshot generation that has since become a link leading out of index/systems refuses
+  the search and is never opened, and the path is re-checked once open, before anything is
+  read. The registry is still never re-read.
+
+changed 2026-11-13: Codex 959 — get_section and get_system_record enforce the same containment at
+  their own open of a module database (_open_module), with or without expected_build: a
+  generation that became a link leading out of index/systems after _resolve_system checked it
+  is refused and never opened. Contained fetches and the corpus path are unchanged.
+
+changed 2026-11-13: Codex 961 — every remaining module open takes the same check at the open:
+  _resolve_system's db_info read and single-system search_corpus go through _open_module, and
+  _snapshot_generation applies system_index.contained_real, the rule check_publication (behind
+  chain status and chain search) now applies too. Contained outputs are unchanged.
 
 changed 2026-09-25: records with no source of their own but row references
     (see system_index.py) show "Source (via row reference): <file> #<anchors> —
@@ -182,12 +213,16 @@ def _registered() -> str:
     return ", ".join(names) if names else "none"
 
 
-def _resolve_system(system: str):
+def _resolve_system(system: str, schemas: tuple = (system_index.SCHEMA_VERSION,)):
     """(db_path, registry entry, None) for a registered module, or (None, None, error string).
 
     Registry-only: a generation file on disk that no registry entry names is never served, a registry entry
     naming a file outside index/systems is refused, and the database's own build id must equal the registry's —
-    a mismatch means publication went wrong, and serving it would put the wrong rules in front of the GM."""
+    a mismatch means publication went wrong, and serving it would put the wrong rules in front of the GM.
+
+    `schemas` are the database schemas the caller reads. Single-system search and status read schema 2 only (a
+    layered, schema-3 module is searched and checked through chain=, which reports its relations); the two fetch
+    tools read 2 and 3, because a chain hit in a layered module is fetched through them."""
     name = (system or "").strip()
     if not system_index.SYSTEM_NAME.match(name):
         return None, None, f"[!] Invalid system name {system!r}: use a registered module id ({_registered()})."
@@ -206,7 +241,9 @@ def _resolve_system(system: str):
         return None, None, f"[!] The database registered for {name!r} is missing ({db.name}); rebuild the module."
     conn = None
     try:
-        conn = _open_readonly(db_path=db)
+        conn, refused = _open_module(db, name, verb="try")      # containment enforced at the open itself
+        if refused:
+            return None, None, refused
         row = conn.execute("SELECT build_id, module, schema_version FROM db_info LIMIT 1").fetchone()
     except sqlite3.Error as e:
         return None, None, f"[!] Could not read the database for {name!r}: {e}"
@@ -220,10 +257,63 @@ def _resolve_system(system: str):
     if row["module"] != name:
         return None, None, (f"[!] Refusing the database registered for {name!r}: it was built for module "
                             f"{row['module']!r}. Rebuild with build_indexes.py --system {name}.")
-    if row["schema_version"] != system_index.SCHEMA_VERSION:
+    if row["schema_version"] not in schemas:
+        if row["schema_version"] == system_index.SCHEMA_LAYERED:
+            return None, None, (f"[!] {name!r} is a layered module (schema 3), searched with its relations through a "
+                                f"chain: search_corpus(query, chain=\"{name}\") or index_status(chain=\"{name}\"). "
+                                f"get_section and get_system_record fetch from it as usual.")
         return None, None, (f"[!] Refusing the database registered for {name!r}: its schema is "
-                            f"{row['schema_version']}, this server reads {system_index.SCHEMA_VERSION}. Rebuild it.")
+                            f"{row['schema_version']}, this server reads {', '.join(map(str, schemas))}. Rebuild it.")
     return db, entry, None
+
+
+# A build id as a generation file name carries it (system_index.GENERATION); expected_build must look like one.
+_BUILD_ID = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
+def _expected_build_error(system: str, entry: dict, expected_build: str) -> str | None:
+    """None when `expected_build` is the module's published build in the registry just read; otherwise the refusal.
+    A superseded build is refused, never answered from its replacement: the caller's hit came from that build."""
+    want = (expected_build or "").strip()
+    if not _BUILD_ID.match(want):
+        return (f"[!] Invalid expected_build {expected_build!r}: copy it from the Fetch line of a chain search "
+                f"hit.")
+    if entry.get("build_id") != want:
+        return (f"[!] Refusing: build {want} is not the published build of {system!r} (now {entry.get('build_id')}) "
+                f"— the module was rebuilt since that search, or the id is wrong. Search again; nothing from another "
+                f"build is returned in place of the one asked for.")
+    return None
+
+
+def _open_module(db_path: Path, system: str, load_vectors: bool = False, verb: str = "fetch") -> tuple:
+    """(open connection, None), or (None, refusal), for a module database about to be read. Containment is
+    enforced HERE, at the open — the registry entry was checked earlier (resolve_db), but the file can become a link
+    leading out of index/systems between that check and this open. The path is resolved (links and junctions
+    followed) and must still lie inside index/systems; the resolved path is what is opened; and it is resolved again
+    once open, before anything is read. Every module open outside the chain search comes through here:
+    _resolve_system's db_info read (verb "try"), single-system search_corpus ("search"), get_section and
+    get_system_record ("fetch")."""
+    real, why = _snapshot_generation(db_path)
+    if real is None:
+        state = f" (index_status(system=\"{system}\") shows its state)" if verb != "try" else ""
+        return None, (f"[!] Refusing the database registered for {system!r}: {why}. Nothing was read; {verb} "
+                      f"again{state}.")
+    conn = _open_readonly(load_vectors=load_vectors, db_path=real)
+    if _snapshot_generation(db_path)[0] != real:
+        conn.close()
+        return None, (f"[!] Refusing the database registered for {system!r}: it changed while being opened, so "
+                      f"nothing was read from it. {verb.capitalize()} again.")
+    return conn, None
+
+
+def _connection_build_error(conn, system: str, expected_build: str) -> str | None:
+    """The same check on the open connection the content is read from, so a generation replaced between the
+    registry read and the open can never be served under the expected build's name."""
+    row = conn.execute("SELECT build_id FROM db_info LIMIT 1").fetchone()
+    if row is None or row[0] != expected_build.strip():
+        return (f"[!] Refusing: {system!r} changed while this fetch ran (the database opened is not build "
+                f"{expected_build.strip()}). Search again.")
+    return None
 
 
 def _parse_representations(raw: str):
@@ -668,43 +758,9 @@ def _format_results(query, header_suffix, scored_rows, score_label, manifests=No
     records = False
     for i, (row, score) in enumerate(scored_rows, 1):
         lines.append(f"{i}. [{score_label}: {score:.2f}] {row['path']}")
-        if system and row.get("representation"):
-            lines.append(f"   Entry: {row['entry_key']}  [{system} · {row['representation']} · {row['authority']}]")
-            via = _inherited(row.get("source_json"))
-            if via:
-                first, more = via[0], len(via) - 1
-                extra = f" (+{more} more table{'s' if more > 1 else ''})" if more else ""
-                lines.append(f"   {_VIA}{first['source'].get('file', '?')}{_anchor_text(first['source'])} — "
-                             f"{_row_text(first['rows'])}{extra}")
-            elif row.get("source_path") or row.get("source_json"):
-                anchors = ""
-                try:
-                    src = json.loads(row.get("source_json") or "null")
-                    if isinstance(src, dict) and isinstance(src.get("anchors"), dict):
-                        anchors = " #" + ", #".join(f"{v}" for v in src["anchors"].values())
-                except ValueError:
-                    pass
-                lines.append(f"   Source: {row.get('source_path') or '?'}{anchors}")
-            records = records or row["representation"] == "dataset"
-        if row.get("name"):
-            lines.append(f"   Name: {row['name']}")
-        if row.get("keywords"):
-            lines.append(f"   Keywords: {row['keywords']}")
-        if row.get("description"):
-            lines.append(f"   Description: {row['description']}")
-        if row.get("doc_type"):
-            lines.append(f"   Type: {row['doc_type']}")
-        missing_parts = [
-            field for field in ("name", "keywords", "description", "type")
-            if row.get(f"missing_{field}")
-        ]
-        if missing_parts:
-            lines.append(f"   Missing: {', '.join(missing_parts)}")
-        if row.get("preview"):
-            lines.append(f"   Match: {' '.join(row['preview'].split())}")
-        manifest = (manifests or {}).get(row["entry_key"])
-        if manifest:
-            lines.append(f"   Sections: {manifest}")
+        body, is_record = _hit_lines(row, system, manifests)
+        lines += body
+        records = records or is_record
         lines.append("")
 
     if manifests:
@@ -719,6 +775,51 @@ def _format_results(query, header_suffix, scored_rows, score_label, manifests=No
     return "\n".join(lines)
 
 
+def _hit_lines(row, system, manifests) -> tuple:
+    """(the lines of one hit after its numbered first line, whether it is a dataset record). Shared by the single
+    search and the chain search, so a hit reads the same in both."""
+    lines = []
+    records = False
+    if system and row.get("representation"):
+        lines.append(f"   Entry: {row['entry_key']}  [{system} · {row['representation']} · {row['authority']}]")
+        via = _inherited(row.get("source_json"))
+        if via:
+            first, more = via[0], len(via) - 1
+            extra = f" (+{more} more table{'s' if more > 1 else ''})" if more else ""
+            lines.append(f"   {_VIA}{first['source'].get('file', '?')}{_anchor_text(first['source'])} — "
+                         f"{_row_text(first['rows'])}{extra}")
+        elif row.get("source_path") or row.get("source_json"):
+            anchors = ""
+            try:
+                src = json.loads(row.get("source_json") or "null")
+                if isinstance(src, dict) and isinstance(src.get("anchors"), dict):
+                    anchors = " #" + ", #".join(f"{v}" for v in src["anchors"].values())
+            except ValueError:
+                pass
+            lines.append(f"   Source: {row.get('source_path') or '?'}{anchors}")
+        records = row["representation"] == "dataset"
+    if row.get("name"):
+        lines.append(f"   Name: {row['name']}")
+    if row.get("keywords"):
+        lines.append(f"   Keywords: {row['keywords']}")
+    if row.get("description"):
+        lines.append(f"   Description: {row['description']}")
+    if row.get("doc_type"):
+        lines.append(f"   Type: {row['doc_type']}")
+    missing_parts = [
+        field for field in ("name", "keywords", "description", "type")
+        if row.get(f"missing_{field}")
+    ]
+    if missing_parts:
+        lines.append(f"   Missing: {', '.join(missing_parts)}")
+    if row.get("preview"):
+        lines.append(f"   Match: {' '.join(row['preview'].split())}")
+    manifest = (manifests or {}).get(row["entry_key"])
+    if manifest:
+        lines.append(f"   Sections: {manifest}")
+    return lines, records
+
+
 @mcp.tool()
 def search_corpus(
     query: str,
@@ -730,8 +831,11 @@ def search_corpus(
     show_sections: bool = True,
     system: str | None = None,
     representation_filter: str | None = None,
+    campaign: str | None = None,
+    chain: str | None = None,
+    per_layer: int | None = None,
 ) -> str:
-    """Ranked search over the worldbuilding corpus, or over one game-system module's rules.
+    """Ranked search over the worldbuilding corpus, over one game-system module's rules, or over a rules chain.
 
     Modes:
         "fts"    (default) full-text BM25. Exact terms, FTS5 query syntax, fast.
@@ -777,11 +881,39 @@ def search_corpus(
             verbatim source wins) and "dataset" (structured records — fetch one
             whole with get_system_record, never read stats from a Match line).
             Dataset records are full-text only: mode="vector" over datasets alone
-            returns nothing, by design.
+            returns nothing, by design. With campaign or chain it applies to every
+            searched layer.
+        campaign: A campaign folder name: search that campaign's rules chain (its
+            Campaign_Profile.md `chain`), layer by layer. Or instead:
+        chain: Layer names, lowest first, comma-separated (e.g. "basesys,house").
+            A chain search queries each indexed layer's own database with its own
+            ranking and groups the hits by layer, most specific first; raw scores
+            are never compared across layers, so none are shown. The header reports
+            the resolved chain, each layer's role, build and freshness, the snapshot
+            token, the adaptation profile and sidecars, and how many hits each layer
+            gave. Every hit carries the relations that layers have DECLARED about it,
+            with their status — or "no override recorded", which is not a claim that
+            it governs — and a Fetch line naming its module and build. Layers declared
+            loaded are listed but not searched. It refuses, searching nothing, when
+            the chain cannot be searched as declared (index_status(campaign=... |
+            chain=...) shows the same resolution). Give at most one of system,
+            campaign and chain.
+        per_layer: With campaign or chain only: the most hits one layer may give.
+            Default min(5, limit). `limit` stays the total cap. Each layer with a
+            hit gets at least one slot; when limit is smaller than the number of
+            layers with hits, the search refuses and names the smallest limit that
+            covers them all.
 
     Returns:
         Formatted ranked results, a 'no results' message, or an error string.
     """
+    if sum(x is not None for x in (campaign, chain)) + bool(system) > 1:
+        return "[!] Give at most one of system, campaign or chain."
+    if campaign is not None or chain is not None:
+        return _chain_search(query, limit, per_layer, mode, category_filter, type_filter, missing_filter,
+                             show_sections, representation_filter, campaign, chain)
+    if per_layer is not None:
+        return "[!] per_layer needs campaign or chain: it caps each layer of a chain search."
     db_path, reps = DB_PATH, None
     if representation_filter is not None and not system:
         return "[!] representation_filter needs a system — the corpus has no representations."
@@ -819,55 +951,13 @@ def search_corpus(
                 f"Valid values: {', '.join(sorted(_valid_missing))}"
             )
 
-    # FTS5 MATCH expression — category stays here; type/missing use SQL below
-    conditions = []
-    if category_filter:
-        cat_clean = category_filter.strip().replace('"', '""')
-        conditions.append(f'category:"{cat_clean}"')
-    conditions.append(_wrap_query(query))
-    match_expr = " AND ".join(conditions)
-
-    # Structured field filters as IN-subqueries against corpus_meta (avoids an
-    # FTS5 quirk where non-MATCH WHERE clauses on joined tables are dropped).
-    # Reused by both lanes so vector hits respect the same filters.
-    subquery_filters: list[str] = []
-    subquery_params: list = []
-    if type_filter:
-        subquery_filters.append(
-            "f.entry_key IN (SELECT entry_key FROM corpus_meta WHERE doc_type = ?)"
-        )
-        subquery_params.append(type_filter.strip())
-    if missing_filter:
-        field = missing_filter.lower().strip()
-        subquery_filters.append(
-            f"f.entry_key IN (SELECT entry_key FROM corpus_meta WHERE missing_{field} = 1)"
-        )
-    if reps:
-        subquery_filters.append(
-            f"f.entry_key IN (SELECT entry_key FROM corpus_meta WHERE representation IN "
-            f"({', '.join('?' * len(reps))}))"
-        )
-        subquery_params.extend(reps)
-    # category_filter is enforced via the FTS MATCH expr for the lexical lane;
-    # for the vector lane we add an equivalent path-segment check at fetch time.
-    vec_filters = list(subquery_filters)
-    vec_params = list(subquery_params)
-    if category_filter:
-        vec_filters.append("instr('/' || f.category || '/', ?) > 0")
-        vec_params.append("/" + category_filter.strip() + "/")
+    match_expr, subquery_filters, subquery_params, vec_filters, vec_params = _filters(
+        query, category_filter, type_filter, missing_filter, reps)
 
     # Header suffix listing active filters
-    suffixes = []
-    if category_filter:
-        suffixes.append(f"category: {category_filter}")
-    if type_filter:
-        suffixes.append(f"type: {type_filter}")
-    if missing_filter:
-        suffixes.append(f"missing: {missing_filter}")
+    suffixes = _filter_suffixes(category_filter, type_filter, missing_filter, reps)
     if system:
         suffixes.insert(0, f"system: {system}")
-    if reps:
-        suffixes.append(f"representation: {', '.join(reps)}")
 
     # Dataset rows carry no vectors. Say so rather than returning a silent empty list, or falling back.
     dataset_only = bool(reps) and set(reps) == {"dataset"}
@@ -890,7 +980,12 @@ def search_corpus(
     conn = None
     guard = None
     try:
-        conn = _open_readonly(load_vectors=needs_vectors, db_path=db_path)
+        if system:                          # a module: containment enforced at the open itself
+            conn, refused = _open_module(db_path, system, load_vectors=needs_vectors, verb="search")
+            if refused:
+                return refused
+        else:
+            conn = _open_readonly(load_vectors=needs_vectors, db_path=db_path)
         schema_err = _schema_error(conn)
         if schema_err:
             return schema_err
@@ -901,39 +996,8 @@ def search_corpus(
             mode = "fts"
             needs_vectors = False
 
-        if mode == "fts":
-            scored = [
-                (r, abs(r["rank"]))
-                for r in _fts_lane(conn, match_expr, subquery_filters, subquery_params, limit)
-            ]
-            score_label = "score"
-
-        elif mode == "vector":
-            query_vec = embedding.embed_query(query)
-            pairs = _vector_lane(conn, query_vec, limit * _OVERSAMPLE)
-            meta = _fetch_display(conn, [rid for rid, _ in pairs], vec_filters, vec_params)
-            scored = []
-            for rid, dist in pairs:
-                if rid in meta:  # survived filters
-                    similarity = max(0.0, 1.0 - dist / 2.0)  # L2 on unit vectors -> 0..1
-                    scored.append((meta[rid], similarity))
-                if len(scored) >= limit:
-                    break
-            score_label = "similarity"
-
-        else:  # hybrid
-            fts_rows = _fts_lane(
-                conn, match_expr, subquery_filters, subquery_params, limit * _OVERSAMPLE
-            )
-            query_vec = embedding.embed_query(query)
-            vec_pairs = _vector_lane(conn, query_vec, limit * _OVERSAMPLE)
-            # Fetch metadata for vector-only candidates (fts rows already have it),
-            # applying filters so they match the lexical lane's constraints.
-            fts_ids = {r["rowid"] for r in fts_rows}
-            vec_only_ids = [rid for rid, _ in vec_pairs if rid not in fts_ids]
-            vec_meta = _fetch_display(conn, vec_only_ids, vec_filters, vec_params)
-            scored = _rrf_fuse(fts_rows, vec_pairs, limit, vec_meta)
-            score_label = "rrf"
+        scored, score_label = _run_lanes(conn, mode, query, match_expr, subquery_filters, subquery_params,
+                                         vec_filters, vec_params, limit)
 
         # Must happen before the connection closes; only touches displayed rows.
         manifests = (
@@ -970,8 +1034,307 @@ def search_corpus(
     return _format_results(query, header_suffix, scored, score_label, manifests, system=system)
 
 
+def _filters(query, category_filter, type_filter, missing_filter, reps) -> tuple:
+    """(match_expr, subquery_filters, subquery_params, vec_filters, vec_params) for one search, shared by the single
+    search and every layer of a chain search. missing_filter must already be validated."""
+    # FTS5 MATCH expression — category stays here; type/missing use SQL below
+    conditions = []
+    if category_filter:
+        cat_clean = category_filter.strip().replace('"', '""')
+        conditions.append(f'category:"{cat_clean}"')
+    conditions.append(_wrap_query(query))
+    match_expr = " AND ".join(conditions)
+
+    # Structured field filters as IN-subqueries against corpus_meta (avoids an
+    # FTS5 quirk where non-MATCH WHERE clauses on joined tables are dropped).
+    # Reused by both lanes so vector hits respect the same filters.
+    subquery_filters: list[str] = []
+    subquery_params: list = []
+    if type_filter:
+        subquery_filters.append(
+            "f.entry_key IN (SELECT entry_key FROM corpus_meta WHERE doc_type = ?)"
+        )
+        subquery_params.append(type_filter.strip())
+    if missing_filter:
+        field = missing_filter.lower().strip()
+        subquery_filters.append(
+            f"f.entry_key IN (SELECT entry_key FROM corpus_meta WHERE missing_{field} = 1)"
+        )
+    if reps:
+        subquery_filters.append(
+            f"f.entry_key IN (SELECT entry_key FROM corpus_meta WHERE representation IN "
+            f"({', '.join('?' * len(reps))}))"
+        )
+        subquery_params.extend(reps)
+    # category_filter is enforced via the FTS MATCH expr for the lexical lane;
+    # for the vector lane we add an equivalent path-segment check at fetch time.
+    vec_filters = list(subquery_filters)
+    vec_params = list(subquery_params)
+    if category_filter:
+        vec_filters.append("instr('/' || f.category || '/', ?) > 0")
+        vec_params.append("/" + category_filter.strip() + "/")
+    return match_expr, subquery_filters, subquery_params, vec_filters, vec_params
+
+
+def _filter_suffixes(category_filter, type_filter, missing_filter, reps) -> list:
+    suffixes = []
+    if category_filter:
+        suffixes.append(f"category: {category_filter}")
+    if type_filter:
+        suffixes.append(f"type: {type_filter}")
+    if missing_filter:
+        suffixes.append(f"missing: {missing_filter}")
+    if reps:
+        suffixes.append(f"representation: {', '.join(reps)}")
+    return suffixes
+
+
+def _run_lanes(conn, mode, query, match_expr, subquery_filters, subquery_params, vec_filters, vec_params,
+               limit) -> tuple:
+    """(scored rows, score label) from ONE open database, in its own ranking. A chain search calls this once per
+    layer and never compares the scores it returns across layers."""
+    if mode == "fts":
+        scored = [
+            (r, abs(r["rank"]))
+            for r in _fts_lane(conn, match_expr, subquery_filters, subquery_params, limit)
+        ]
+        score_label = "score"
+
+    elif mode == "vector":
+        query_vec = embedding.embed_query(query)
+        pairs = _vector_lane(conn, query_vec, limit * _OVERSAMPLE)
+        meta = _fetch_display(conn, [rid for rid, _ in pairs], vec_filters, vec_params)
+        scored = []
+        for rid, dist in pairs:
+            if rid in meta:  # survived filters
+                similarity = max(0.0, 1.0 - dist / 2.0)  # L2 on unit vectors -> 0..1
+                scored.append((meta[rid], similarity))
+            if len(scored) >= limit:
+                break
+        score_label = "similarity"
+
+    else:  # hybrid
+        fts_rows = _fts_lane(
+            conn, match_expr, subquery_filters, subquery_params, limit * _OVERSAMPLE
+        )
+        query_vec = embedding.embed_query(query)
+        vec_pairs = _vector_lane(conn, query_vec, limit * _OVERSAMPLE)
+        # Fetch metadata for vector-only candidates (fts rows already have it),
+        # applying filters so they match the lexical lane's constraints.
+        fts_ids = {r["rowid"] for r in fts_rows}
+        vec_only_ids = [rid for rid, _ in vec_pairs if rid not in fts_ids]
+        vec_meta = _fetch_display(conn, vec_only_ids, vec_filters, vec_params)
+        scored = _rrf_fuse(fts_rows, vec_pairs, limit, vec_meta)
+        score_label = "rrf"
+    return scored, score_label
+
+
+# ---------------------------------------------------------------------------
+# Chain search (chain-aware search, stage 3)
+# ---------------------------------------------------------------------------
+
+def _snapshot_generation(db: str) -> tuple:
+    """(its real path, None) when a snapshot's generation file still resolves inside index/systems, with links and
+    junctions followed; otherwise (None, why). Called at the open itself, and again once the file is open. The rule
+    is system_index.contained_real, the one check_publication applies too."""
+    real, why = system_index.contained_real(Path(db), SYSTEMS_DIR)
+    return (real, None) if real is not None else (None, f"it {why}")
+
+
+def _chain_search(query, limit, per_layer, mode, category_filter, type_filter, missing_filter, show_sections,
+                  representation_filter, campaign, chain) -> str:
+    """search_corpus(campaign=... | chain=...). Resolves the chain once (rules_chain.resolve: ONE registry
+    snapshot), opens every indexed layer's generation from that snapshot, checks each database still is the build
+    the snapshot named, and only then queries — so a chain search never mixes builds, and never switches to a
+    generation published after it resolved. Refuses, searching nothing, when the chain cannot be searched as
+    declared, a snapshot database has gone, or limit cannot cover every layer with a hit (refinement A)."""
+    mode = (mode or "fts").lower().strip()
+    if mode not in ("fts", "vector", "hybrid"):
+        return f"[!] Invalid mode: '{mode}'. Valid values: fts, vector, hybrid"
+    limit_err = _check_limit(limit)
+    if limit_err:
+        return limit_err
+    if per_layer is None:
+        per_layer = min(5, limit)
+    if isinstance(per_layer, bool) or not isinstance(per_layer, int) or per_layer < 1:
+        return f"[!] per_layer must be a whole number >= 1 (got {per_layer!r})."
+    if per_layer > _MAX_LIMIT:
+        return f"[!] per_layer {per_layer} exceeds the safety ceiling of {_MAX_LIMIT} (_MAX_LIMIT)."
+    _valid_missing = {"name", "keywords", "description", "type"}
+    if missing_filter and missing_filter.lower().strip() not in _valid_missing:
+        return (f"[!] Invalid missing_filter: '{missing_filter}'. "
+                f"Valid values: {', '.join(sorted(_valid_missing))}")
+    reps = None
+    if representation_filter is not None:
+        reps, err = _parse_representations(representation_filter)
+        if err:
+            return err
+
+    res, err = _resolve_chain(campaign, chain, "Chain search")
+    if err:
+        return err
+    import rules_chain
+    head = _chain_lines(res)
+    if res.refused:
+        return "\n".join([f"No search was run for: {query}", ""] + head)
+
+    suffixes = _filter_suffixes(category_filter, type_filter, missing_filter, reps)
+    dataset_only = bool(reps) and set(reps) == {"dataset"}
+    if mode == "vector" and dataset_only:
+        return (f"No vector-eligible rows for: {query} [representation: dataset] — dataset records are indexed for "
+                f"full-text search only. Use mode=\"fts\" or \"hybrid\".")
+    notes = []
+    if mode == "hybrid" and dataset_only:
+        mode = "fts"
+        notes.append("dataset records are full-text only - lexical lane")
+    if mode in ("vector", "hybrid") and not embedding.AVAILABLE:
+        notes.append("vector lane unavailable (deps not installed) - using fts")
+        mode = "fts"
+    header = f"Chain search for: {query} [" + ", ".join([f"mode: {mode}"] + suffixes + notes) + "]"
+
+    searched = [l for l in res.layers if l.role == rules_chain.ROLE_INDEXED]       # chain order, lowest first
+    if not searched:
+        return "\n".join([header, ""] + head + ["", "Nothing was searched: no layer in this chain is indexed "
+                                                "(a layer declared loaded is never searched)."])
+    order = list(reversed(searched))                                                # most specific first
+    filters = _filters(query, category_filter, type_filter, missing_filter, reps)
+    builds = {l.module: l.build_id for l in searched}
+    chain_modules = [l.module for l in res.layers if l.module]
+    conns, results, lane_notes = {}, {}, {}
+    guard = _QueryGuard(_QUERY_TIMEOUT_S)          # one deadline for the whole chain, not one per layer
+    try:
+        # Open every layer from the snapshot BEFORE querying any: a database that has gone, or is not the build the
+        # snapshot named, refuses the whole search. Nothing is ever re-resolved against a newer registry.
+        for l in searched:
+            # Containment is enforced HERE, at the open, not only when the snapshot was resolved: a generation that
+            # has since become a link leading out of index/systems is never opened. Re-checked once open, before
+            # anything is read, so a swap during the open is refused too.
+            real, why = _snapshot_generation(l.db)
+            row = None
+            if real is not None:
+                try:
+                    conn = _open_readonly(load_vectors=mode != "fts", db_path=real)
+                    conns[l.module] = conn
+                    if _snapshot_generation(l.db)[0] != real:
+                        why = "it changed while being opened, so nothing was read from it"
+                    else:
+                        row = conn.execute("SELECT build_id, module, schema_version FROM db_info LIMIT 1").fetchone()
+                        why = "it is no longer that build"
+                except sqlite3.Error as e:
+                    row, why = None, f"it can no longer be opened ({e})"
+            if row is None or (row["build_id"], row["module"], row["schema_version"]) != (l.build_id, l.module,
+                                                                                          l.schema):
+                return "\n".join([f"No search was run for: {query}", "",
+                                  f"[!] Chain search refused — the database the snapshot named for {l.module} "
+                                  f"(build {l.build_id}) changed after the chain was resolved: {why}. The layer was "
+                                  f"rebuilt or removed meanwhile; search again (index_status shows the new build)."])
+            conn.set_progress_handler(guard, _PROGRESS_STEPS)
+        declarations = []
+        for l in searched:                                                         # chain order
+            if l.schema == system_index.SCHEMA_LAYERED:
+                declarations += rules_chain.read_declarations(conns[l.module], l.module)
+        inside, outside = rules_chain.scope(declarations, chain_modules)
+
+        for l in order:
+            conn, lane_mode = conns[l.module], mode
+            if lane_mode != "fts" and not _has_vector_table(conn):
+                lane_mode = "fts"
+                lane_notes[l.module] = "no vector table - fts"
+            results[l.module] = _run_lanes(conn, lane_mode, query, *filters, per_layer + 1)[0]
+        counts = [min(len(results[l.module]), per_layer) for l in order]
+        slots, need = rules_chain.allocate(counts, limit, per_layer)
+        given = dict(zip([l.module for l in order], slots or counts))
+        coverage = []
+        for l in reversed(res.layers):                                             # every layer, most specific first
+            if l.role == rules_chain.ROLE_LOADED:
+                coverage.append(f"    {l.module}: not searched (declared loaded) — its content, and any change to "
+                                f"it, are invisible to this search")
+                continue
+            note = f" ({lane_notes[l.module]})" if l.module in lane_notes else ""
+            if slots is None:
+                coverage.append(f"    {l.module}: {'has hits' if given[l.module] else 'no hits'}{note}")
+            else:
+                more = ", more matched" if len(results[l.module]) > given[l.module] else ""
+                coverage.append(f"    {l.module}: {given[l.module]} hit(s) shown{more}{note}")
+        if slots is None:
+            return "\n".join([f"No results were returned for: {query}", "",
+                              f"[!] Chain search refused — {need} searched layers have hits, but limit is {limit}: "
+                              f"one hit from each cannot be shown within the cap, and no matching layer is dropped "
+                              f"silently. Search again with limit={need} or more (or narrow the query).",
+                              "  Layers with hits (most specific first):"] + coverage)
+
+        shown = {l.module: results[l.module][:n] for l, n in zip(order, slots)}
+        manifests = {}
+        if show_sections:
+            for l in order:
+                manifests.update({(l.module, k): v for k, v in _fetch_manifests(
+                    conns[l.module], [r["entry_key"] for r, _ in shown[l.module]
+                                      if r.get("representation") != "dataset"]).items()})
+        total = sum(slots)
+        lines = [header, ""] + head
+        lines.append("  Searched (most specific first; each layer ranked by its own database — scores are never "
+                     "compared across layers, so none are shown):")
+        lines += coverage
+        lines.append(f"  Bounds:     limit {limit}, per_layer {per_layer}; {total} hit(s) shown")
+        lines.append(f"  Relations:  {len(inside)} declaration(s) within this chain, {outside} outside it (ignored). "
+                     f"Each is self-declared by its layer's author and reported as declared, never verified; search "
+                     f"never decides which rule governs, and \"extended by\", \"added to by\", \"partitioned with\" "
+                     f"and \"falls through\" never mean an entry is displaced.")
+        if res.sidecars:
+            lines.append("  Sidecars:   declared loaded and not searched — their content, and any change to them, are "
+                         "invisible to this search.")
+        if not total:
+            lines += ["", f"No results for: {query} in any searched layer."]
+        n = 0
+        for idx, l in enumerate(order):
+            higher = [h.module for h in order[:idx]]
+            lines += ["", f"== {l.module} — {l.kind}, schema {l.schema}, build {l.build_id}: "
+                          f"{len(shown[l.module])} hit(s)"]
+            if l.freshness == "CHANGED":
+                lines.append("   [!] SOURCES CHANGED since this build — its hits may not match the files")
+            elif l.freshness.startswith("unknown"):
+                lines.append(f"   [!] sources {l.freshness}")
+            lines += [f"   [!] {note}" for note in l.notes]
+            for rank, (row, _score) in enumerate(shown[l.module], 1):
+                n += 1
+                lines.append(f"{n}. {row['path']}  [{l.module} rank {rank}]")
+                body, _rec = _hit_lines(row, l.module, {row["entry_key"]: manifests.get((l.module, row["entry_key"]))})
+                lines += body
+                rel = rules_chain.target_lines(l.module, row["entry_key"], inside, conns, builds, higher)
+                lines.append(f"   Relations: {rel[0]}")
+                lines += [f"              {x}" for x in rel[1:]]
+                lines += [f"   Declares: {x}" for x in rules_chain.entry_lines(l.module, row["entry_key"], inside,
+                                                                              conns, builds)]
+                if row.get("representation") == "dataset":
+                    lines.append(f"   Fetch: get_system_record(system=\"{l.module}\", entry_key=\"{row['entry_key']}\", "
+                                 f"expected_build=\"{l.build_id}\")")
+                else:
+                    lines.append(f"   Fetch: get_section(path=\"{row['path']}\", system=\"{l.module}\", "
+                                 f"expected_build=\"{l.build_id}\")")
+        if any(manifests.values()):
+            lines += ["", "(~N = estimated tokens. For the files listing Sections, get_section(path, heading, system, "
+                          "expected_build) returns one section instead of the whole file.)"]
+        return "\n".join(lines)
+    except (sqlite3.OperationalError, system_index.SystemIndexError) as e:
+        # The guard is checked first, whichever error carried its interrupt: a read of a layer's relation tables
+        # that the deadline aborts is a timeout, never a "broken" database.
+        if guard.fired:
+            return (f"[!] Search aborted: query exceeded the {_QUERY_TIMEOUT_S:.0f}s timeout guard — likely a "
+                    f"pathological query, not a normal search. If this trips on legitimate use, raise "
+                    f"_QUERY_TIMEOUT_S in {Path(__file__).name}.")
+        if isinstance(e, system_index.SystemIndexError):
+            return "\n".join([f"No search was run for: {query}", "", f"[!] Chain search refused — {e}"])
+        return (f"[!] Search error: {e}\n\n"
+                "Hint: FTS5 has special syntax. Wrap problematic terms in double "
+                'quotes (e.g. "Kestrel\'s") or use prefix matching (Kestrel*).')
+    finally:
+        for c in conns.values():
+            c.close()
+
+
 @mcp.tool()
-def get_section(path: str, heading: str | None = None, level: int = 2, system: str | None = None) -> str:
+def get_section(path: str, heading: str | None = None, level: int = 2, system: str | None = None,
+                expected_build: str | None = None) -> str:
     """Return one section of an indexed document instead of the whole file.
 
     Pairs with the `Sections:` line in search_corpus output: the search says
@@ -997,17 +1360,27 @@ def get_section(path: str, heading: str | None = None, level: int = 2, system: s
             module's database (the path is module-relative, as its search hits
             print it). Documents only: a dataset file's records come from
             get_system_record.
+        expected_build: With `system` only: the build id a chain search hit's
+            Fetch line names. The document is served only from that build; if the
+            module has been rebuilt since, the call refuses (search again) rather
+            than answer from the new build. Omit it for the current build.
 
     Returns:
         The section text with a short provenance header, a section listing when
         `heading` is omitted or ambiguous, or an error string.
     """
+    if expected_build is not None and not system:
+        return "[!] expected_build needs a system: it pins one module database's build."
     db_path, doc_filter = DB_PATH, ""
     if system:
-        db_path, _entry, err = _resolve_system(system)
+        db_path, _entry, err = _resolve_system(system, system_index.SUPPORTED_DEPENDENCY_SCHEMAS)
         if err:
             return err
         system = system.strip()
+        if expected_build is not None:
+            err = _expected_build_error(system, _entry, expected_build)
+            if err:
+                return err
         doc_filter = " AND COALESCE(m.representation, '') != 'dataset'"
     elif not DB_PATH.exists():
         rebuild_path = DB_PATH.parent / "build_indexes.py"
@@ -1028,10 +1401,19 @@ def get_section(path: str, heading: str | None = None, level: int = 2, system: s
 
     conn = None
     try:
-        conn = _open_readonly(db_path=db_path)
+        if system:                                          # a module: containment enforced at the open itself
+            conn, open_err = _open_module(db_path, system)
+            if open_err:
+                return open_err
+        else:
+            conn = _open_readonly(db_path=db_path)
         schema_err = _schema_error(conn)
         if schema_err:
             return schema_err
+        if expected_build is not None:
+            build_err = _connection_build_error(conn, system, expected_build)
+            if build_err:
+                return build_err
         row = conn.execute(
             f"""
             SELECT f.path AS path, f.name AS name, f.content AS content,
@@ -1114,6 +1496,8 @@ def get_section(path: str, heading: str | None = None, level: int = 2, system: s
         provenance += f"  [{tag}]"
     if system and row["representation"]:
         provenance += f"  [{system} · {row['representation']} · {row['authority']}]"
+    if expected_build is not None:
+        provenance += f"  [build {expected_build.strip()}]"
     return (
         f"{provenance}  (~{_est_tokens(body)} of ~{_est_tokens(content)} tok)\n"
         f"{'-' * 60}\n"
@@ -1123,7 +1507,7 @@ def get_section(path: str, heading: str | None = None, level: int = 2, system: s
 
 @mcp.tool()
 def get_system_record(system: str, entry_key: str | None = None, dataset: str | None = None,
-                      record_id: str | None = None) -> str:
+                      record_id: str | None = None, expected_build: str | None = None) -> str:
     """Fetch one whole structured record from a game-system module's datasets.
 
     Search finds a record; this returns it exactly — every field, and its whole
@@ -1137,14 +1521,22 @@ def get_system_record(system: str, entry_key: str | None = None, dataset: str | 
         dataset: The dataset's declared name (the record's own `dataset` field,
             e.g. "morphs" — not necessarily its file name), together with
         record_id: the record's id within the module (e.g. "morph/flat").
+        expected_build: The build id a chain search hit's Fetch line names. The
+            record is served only from that build; if the module has been rebuilt
+            since, the call refuses (search again) rather than answer from the new
+            build. Omit it for the current build.
 
     Returns:
         The record as pretty JSON under a provenance header, or an error string.
     """
-    db_path, _entry, err = _resolve_system(system)
+    db_path, _entry, err = _resolve_system(system, system_index.SUPPORTED_DEPENDENCY_SCHEMAS)
     if err:
         return err
     system = system.strip()
+    if expected_build is not None:
+        err = _expected_build_error(system, _entry, expected_build)
+        if err:
+            return err
     by_key = entry_key is not None and dataset is None and record_id is None
     by_pair = entry_key is None and dataset is not None and record_id is not None
     if not (by_key or by_pair):
@@ -1152,7 +1544,13 @@ def get_system_record(system: str, entry_key: str | None = None, dataset: str | 
 
     conn = None
     try:
-        conn = _open_readonly(db_path=db_path)
+        conn, open_err = _open_module(db_path, system)      # containment enforced at the open itself
+        if open_err:
+            return open_err
+        if expected_build is not None:
+            build_err = _connection_build_error(conn, system, expected_build)
+            if build_err:
+                return build_err
         if by_key:
             row = conn.execute("SELECT * FROM corpus_meta WHERE entry_key = ?", (entry_key.strip(),)).fetchone()
         else:
@@ -1183,9 +1581,10 @@ def get_system_record(system: str, entry_key: str | None = None, dataset: str | 
             f"({t['index']})  {json.dumps(t['source'], ensure_ascii=False)}" for t in via)
     else:
         provenance = f"Source: {row['source_path'] or '?'}  {row['source_json'] or '(none recorded)'}"
+    build = f" · build {expected_build.strip()}" if expected_build is not None else ""
     return (
         f"{row['entry_key']}  [{system} · dataset {row['dataset']} · {row['record_kind'] or 'record'} · "
-        f"{row['authority']}]\n"
+        f"{row['authority']}{build}]\n"
         f"{provenance}\n"
         f"{'-' * 60}\n"
         f"{record}\n"
@@ -1341,17 +1740,31 @@ def _system_status(system: str) -> str:
     ])
 
 
-def _chain_status(campaign: str | None, chain: str | None) -> str:
-    """index_status(campaign=... | chain=...): the resolved rules chain, read-only (rules_chain.resolve)."""
+def _resolve_chain(campaign: str | None, chain: str | None, what: str = "Chain status") -> tuple:
+    """(rules_chain.Resolution, None), or (None, error): the one resolution behind the chain status and the chain
+    search, so the two can never disagree about a chain."""
     try:
         import rules_chain
     except ImportError as e:
-        return f"[!] Chain status is unavailable in this deployment ({e}); the image needs rules_chain.py."
+        return None, f"[!] {what} is unavailable in this deployment ({e}); the image needs rules_chain.py."
     try:
         rules_cfg = load_cfg(RULES_CFG_PATH) if RULES_CFG_PATH.exists() else {}
     except Exception as e:                                   # an unreadable config refuses; it never means "none"
-        return f"[!] Chain refused — the corpus config {RULES_CFG_PATH.name} cannot be read: {e}"
-    res = rules_chain.resolve(_CORPUS_ROOT, SYSTEMS_DIR.parent, rules_cfg, campaign=campaign, chain=chain)
+        return None, f"[!] Chain refused — the corpus config {RULES_CFG_PATH.name} cannot be read: {e}"
+    return rules_chain.resolve(_CORPUS_ROOT, SYSTEMS_DIR.parent, rules_cfg, campaign=campaign, chain=chain), None
+
+
+def _chain_status(campaign: str | None, chain: str | None) -> str:
+    """index_status(campaign=... | chain=...): the resolved rules chain, read-only (rules_chain.resolve)."""
+    res, err = _resolve_chain(campaign, chain)
+    if err:
+        return err
+    return "\n".join(_chain_lines(res))
+
+
+def _chain_lines(res) -> list:
+    """The chain header: every effective input of a resolution, and why it refuses when it does."""
+    import rules_chain
     what = (f"campaign {res.campaign}" + (f" ({res.profile})" if res.profile else "")
             if res.selector == "campaign" else "explicit chain")
     lines = []
@@ -1390,7 +1803,7 @@ def _chain_status(campaign: str | None, chain: str | None) -> str:
                                          "[!] NON-AUTHORITATIVE — the chain's adaptation inputs are not current"))
     if res.warnings:
         lines += ["  Warnings:"] + [f"    [!] {w}" for w in res.warnings]
-    return "\n".join(lines)
+    return lines
 
 
 @mcp.tool()

@@ -63,6 +63,19 @@ malformed, not absent. A malformed entry for a chain layer refuses that layer be
 declared not_searched does not hide one; one for any other module is left out of the snapshot, and a layer depending
 on it says so.
 
+CHAIN SEARCH SUPPORT (stage 3; the search itself is search_mcp_server._chain_search). An indexed layer records the
+generation file the snapshot named (Layer.db), so the search queries exactly that build and never re-reads the
+registry. allocate() spends `limit` across layers — one slot for each layer with a hit, the rest most specific first,
+each layer capped at per_layer — and refuses, naming the smallest workable limit, when limit is below the number of
+layers with hits (refinement A, Codex 938). read_declarations() reads a schema-3 layer's recorded relations with the
+target builds it was validated against; scope() keeps those whose declaring and target layers are both in the active
+chain and counts the rest; assess() recomputes each one's state against the target layer's database in the same
+snapshot (pinned and unchanged, changed, unpinned, orphaned, validated against an older build) and names its
+self-declared decider; target_lines() and entry_lines() word them for a hit. Every phrase says "declared", the
+complementary modes never imply that an entry is displaced, several declarations of one unit are listed and flagged
+unresolved, never collapsed, and a hit no declaration names says "no override recorded", which is not a claim that it
+governs.
+
 Command line arguments: none (library module).
 
 # changed 2026-11-12: created (chain-aware search stage 2; design Working_Documents/Chain_Search_Design_Proposal_v2.md,
@@ -73,6 +86,13 @@ Command line arguments: none (library module).
 # changed 2026-11-12: Codex 949 fixes — an indexed layer's index.cfg comes from its contained, validated folder
 #   (_freshness no longer runs find_cfg); a null registry entry is malformed, and a malformed entry refuses a selected
 #   layer before the declared-loaded branch.
+# changed 2026-11-12: chain-aware search stage 3 (Codex 955) — Layer.db and Layer.kind from the snapshot; allocation
+#   with refinement A; declared relations read, scoped to the active chain, assessed against the same snapshot and
+#   worded for each hit.
+# changed 2026-11-12: Codex 957 fixes — every recorded declaration is validated against the builder's rules before
+#   anything renders (a malformed mode crashed the search); declarations naming one unit are grouped by its canonical
+#   identity (unit_identity: get_section's heading normalisation, with level and whole-entry kept distinct), so
+#   equivalent spellings of one heading show their conflict.
 """
 
 import hashlib
@@ -104,6 +124,8 @@ class Layer:
     built_at: str = ""
     freshness: str = ""             # "unchanged", "CHANGED", or "unknown: <why>"
     notes: list = field(default_factory=list)   # dependency and extends observations
+    db: str = ""                    # an indexed layer's generation file, from the ONE snapshot (stage 3 queries it)
+    kind: str = ""                  # an indexed layer's kind as published (system for a legacy module)
 
 
 @dataclass
@@ -506,6 +528,7 @@ def resolve(root: Path, index_dir: Path, rules_cfg: dict, *, campaign: str = Non
             continue
         layer.role, layer.build_id, layer.schema = ROLE_INDEXED, info["build_id"], info["schema_version"]
         layer.built_at = str(entry.get("built_at", ""))
+        layer.db, layer.kind = str(_db), str((entry.get("layer") or {}).get("kind") or "system")
         _freshness(root, layer, entry, known[mid], snapshot, malformed)
         if layer.freshness == "CHANGED":
             res.warnings.append(f"{mid}: SOURCES CHANGED since the build — results may not match the files; rebuild "
@@ -528,3 +551,233 @@ def resolve(root: Path, index_dir: Path, rules_cfg: dict, *, campaign: str = Non
         res.adaptation.status = ("none — an explicit chain carries no adaptation profile; retrieval is "
                                  "non-authoritative")
     return res
+
+
+# ---------------------------------------------------------------------------
+# Chain search support (stage 3): allocation, and declared relations as reported
+# ---------------------------------------------------------------------------
+
+# Relation lines shown on one hit; the rest are counted on the hit, never dropped silently.
+MAX_RELATION_LINES = 10
+# How each mode is worded on the entry a declaration names. Complementary and partial modes never say, or imply, that
+# the named entry is displaced; and every phrase says "declared", because nothing here verifies a declaration.
+MODE_PHRASES = {
+    "override": "declared override by {layer}",
+    "n_a": "declared not applicable by {layer}",
+    "add": "declared: added to by {layer}",
+    "extend": "declared: extended by {layer}",
+    "partition": "declared: partitioned with {layer}",
+    "fall_through": "declared: falls through to this entry from {layer}",
+}
+NO_OVERRIDE = "no override recorded (no declaration in this chain names this entry; not a claim that it governs)"
+
+
+def allocate(counts: list, limit: int, per_layer: int) -> tuple:
+    """(slots per layer, None), or (None, the minimum limit) — refinement A (Codex 938).
+
+    `counts` is each searched layer's number of hits, in presentation order (most specific first). Every layer with a
+    hit gets one slot, so coverage is visible; the slots left go in presentation order, each layer up to `per_layer`
+    and its own hits, until `limit` is spent. So no layer exceeds per_layer and the total never exceeds limit. When
+    limit is smaller than the number of layers with hits, a slot for each cannot be given within the cap: the result
+    is a refusal carrying the smallest limit that can, never a silently omitted layer and never output beyond the
+    cap."""
+    matching = sum(1 for c in counts if c > 0)
+    if limit < matching:
+        return None, matching
+    slots = [1 if c > 0 else 0 for c in counts]
+    left = limit - matching
+    for i, c in enumerate(counts):
+        extra = min(max(min(c, per_layer) - 1, 0), left)
+        slots[i] += extra
+        left -= extra
+    return slots, None
+
+
+@dataclass
+class Declaration:
+    """One relation a searched layer's database records (its relations table, validated at its build)."""
+    layer: str                      # the declaring layer
+    item: int                       # its item number in that layer's relations.yaml
+    entry_key: str
+    entry_section: tuple            # (heading, level) or None
+    target_layer: str
+    target_key: str
+    target_section: tuple
+    mode: str
+    status: str
+    decided: str = ""
+    decider: str = ""               # SELF-DECLARED by the layer's author; never verified approval
+    declared_sha256: str = ""       # the pin the author declared ("" = unpinned)
+    validated_build: str = ""       # the target layer's build this layer was validated against ("" = not recorded)
+
+    def entry_label(self) -> str:
+        return _unit_label(self.layer, self.entry_key, self.entry_section)
+
+    def target_label(self) -> str:
+        return _unit_label(self.target_layer, self.target_key, self.target_section)
+
+
+def _unit_label(layer: str, key: str, section) -> str:
+    return f"{layer}:{key}" + (f" § {section[0]!r} (level {section[1]})" if section else "")
+
+
+def _section(raw: str):
+    """A relations-table section column ('' or JSON {heading, level}) as (heading, level) or None."""
+    if not raw:
+        return None
+    import json
+    data = json.loads(raw)
+    if not isinstance(data, dict) or not isinstance(data.get("heading"), str) or not isinstance(data.get("level"), int):
+        raise ValueError(f"malformed section {raw!r}")
+    if isinstance(data["level"], bool) or not 1 <= data["level"] <= 6 or not system_index.norm_heading(data["heading"]):
+        raise ValueError(f"malformed section {raw!r}")
+    return data["heading"], data["level"]
+
+
+def unit_identity(layer: str, key: str, section) -> tuple:
+    """The canonical identity of a unit a declaration names: its layer, its key, and — for a section — its level and
+    the heading as section resolution normalises it (system_index.norm_heading, get_section's own rule). Two
+    spellings that select the same section are one unit; a whole entry and a section of it are different units, and
+    so are one heading at two levels."""
+    return layer, key, (None if section is None else (system_index.norm_heading(section[0]), section[1]))
+
+
+def _check_declaration(d: "Declaration") -> None:
+    """Every field read from a relations table must be one the builder could have written (parse_relations' rules);
+    anything else is a broken table, never rendered. Raises ValueError naming the item."""
+    def bad(what):
+        raise ValueError(f"relations item {d.item!r}: {what}")
+    if isinstance(d.item, bool) or not isinstance(d.item, int):
+        bad("item is not an integer")
+    for name in ("entry_key", "target_key"):
+        value = getattr(d, name)
+        if not isinstance(value, str) or not system_index.ENTRY_KEY.match(value):
+            bad(f"{name} {value!r} is not an entry key")
+    if not isinstance(d.target_layer, str) or not system_index.SYSTEM_NAME.match(d.target_layer):
+        bad(f"target_layer {d.target_layer!r} is not a layer id")
+    if d.mode not in system_index.RELATION_MODES:
+        bad(f"mode {d.mode!r} is not one of {', '.join(system_index.RELATION_MODES)}")
+    if d.status not in system_index.RELATION_STATUSES:
+        bad(f"status {d.status!r} is not one of {', '.join(system_index.RELATION_STATUSES)}")
+    if not isinstance(d.decided, str) or (d.decided and not system_index.DATE.match(d.decided)):
+        bad(f"decided {d.decided!r} is not a date")
+    if not isinstance(d.decider, str):
+        bad("decider is not text")
+    if not isinstance(d.declared_sha256, str) or (d.declared_sha256 and not system_index.HEX64.match(d.declared_sha256)):
+        bad(f"declared_sha256 {d.declared_sha256!r} is not a unit hash")
+    for key, section in ((d.entry_key, d.entry_section), (d.target_key, d.target_section)):
+        if section is not None and key.startswith("rec:"):
+            bad(f"{key} is a record, which takes no section")
+
+
+def read_declarations(conn, layer: str) -> list:
+    """Every declaration a schema-3 layer's database records, in item order, with the build of each target layer it
+    was validated against (its layer_info.depends_on). Raises SystemIndexError, naming the fix, when the tables a
+    schema-3 database must hold are missing or malformed: a layered layer's relations are never guessed absent."""
+    import json
+    import sqlite3
+    try:
+        info = conn.execute("SELECT depends_on FROM layer_info").fetchall()
+        rows = conn.execute("SELECT item, entry_key, entry_section, target_layer, target_key, target_section, mode, "
+                            "status, decided, decider, declared_sha256 FROM relations ORDER BY item").fetchall()
+        if len(info) != 1:
+            raise ValueError(f"layer_info holds {len(info)} rows, not one")
+        deps = json.loads(info[0][0] or "{}")
+        if not isinstance(deps, dict):
+            raise ValueError("layer_info.depends_on is not a mapping")
+        if not all(isinstance(k, str) and isinstance(v, str) for k, v in deps.items()):
+            raise ValueError("layer_info.depends_on does not map layer ids to build ids")
+        out = [Declaration(layer, r[0], r[1], _section(r[2]), r[3], r[4], _section(r[5]), r[6], r[7],
+                           r[8] or "", r[9] or "", r[10] or "", str(deps.get(r[3]) or "")) for r in rows]
+        for d in out:                     # validated BEFORE any is rendered: a broken row never reaches the output
+            _check_declaration(d)
+    except (sqlite3.Error, ValueError, TypeError) as e:
+        raise system_index.SystemIndexError(f"{layer}: its schema-3 database has unreadable layer tables ({e}); rebuild "
+                                            f"it (build_indexes.py --system {layer})")
+    return out
+
+
+def scope(declarations: list, chain_modules: list) -> tuple:
+    """(declarations inside the chain, the number outside it). Active-chain scoping: a declaration counts only when
+    its declaring layer and its target layer are both in the active chain; the rest are ignored, and counted."""
+    inside = [d for d in declarations if d.layer in chain_modules and d.target_layer in chain_modules]
+    return inside, len(declarations) - len(inside)
+
+
+def assess(d: Declaration, conns: dict, builds: dict) -> list:
+    """The status words for one in-chain declaration, recomputed now against the target layer's database from the
+    SAME snapshot (`conns`: {layer: open connection}, `builds`: {layer: snapshot build id}). Never "governs", never
+    "verified": currentness of the pin, whether the target still resolves, and the build validated against."""
+    words = [d.status]
+    conn = conns.get(d.target_layer)
+    if conn is None:
+        words.append(f"the target layer {d.target_layer} is not searched in this chain; currentness unknown")
+    else:
+        now, why = system_index.resolve_unit(conn, system_index.Address(d.target_layer, d.target_key,
+                                                                         d.target_section))
+        if why:
+            words.append(f"[!] ORPHANED — the target no longer resolves ({why})")
+        elif not d.declared_sha256:
+            words.append("unpinned, currentness unknown")
+        elif d.declared_sha256 != now:
+            words.append("[!] target changed since declared")
+        else:
+            words.append("pinned; the target is unchanged since declared")
+    live = builds.get(d.target_layer)
+    if live and d.validated_build and d.validated_build != live:
+        words.append(f"validated against an older build of {d.target_layer} ({d.validated_build}; now {live})")
+    elif live and not d.validated_build:
+        words.append(f"the build of {d.target_layer} it was validated against is not recorded")
+    who = f" by {d.decider}" if d.decider else ""
+    when = f" on {d.decided}" if d.decided else ""
+    words.append(f"self-declared{who}{when} in {d.layer} relations.yaml item {d.item}")
+    return words
+
+
+def target_lines(hit_layer: str, hit_key: str, inside: list, conns: dict, builds: dict, higher: list) -> list:
+    """The relation lines for one hit, from the declarations that name it (its layer and entry key), in chain order
+    (`inside` is already in chain order). `higher` lists the searched layers above the hit's layer. A hit no
+    declaration names says so — no override recorded — which is explicitly not a claim that it governs."""
+    naming = [d for d in inside if d.target_layer == hit_layer and d.target_key == hit_key]
+    lines = []
+    if not naming:
+        lines.append(NO_OVERRIDE)
+    units = {}                        # by canonical identity: equivalent heading spellings are one unit
+    for d in naming:
+        units.setdefault(unit_identity(d.target_layer, d.target_key, d.target_section), []).append(d)
+    shown = 0
+    for group in units.values():
+        section = group[0].target_section                  # the first declaration's own spelling labels the unit
+        where = f"§ {section[0]!r} (level {section[1]}): " if section else ""
+        for d in group:
+            if shown < MAX_RELATION_LINES:
+                phrase = MODE_PHRASES[d.mode].format(layer=d.layer)       # modes are validated when read
+                spelt = (f" [declared as § {d.target_section[0]!r}]" if section and d.target_section[0] != section[0]
+                         else "")
+                lines.append(f"{where}{phrase} ({d.entry_label()}){spelt} — " + "; ".join(assess(d, conns, builds)))
+            shown += 1
+        if len(group) > 1:
+            overrides = sum(d.mode == "override" for d in group)
+            lines.append(f"{where}[!] conflicting declarations: unresolved ({len(group)} declarations, {overrides} "
+                         f"override(s); search does not reconcile them)" if overrides else
+                         f"{where}several declarations ({len(group)}): unresolved — search does not reconcile them")
+    if shown > MAX_RELATION_LINES:
+        lines.append(f"+{shown - MAX_RELATION_LINES} more declaration(s) name this entry, not shown "
+                     f"(build_indexes.py --relations <layer> lists them)")
+    undeclared = [h for h in higher if not any(d.layer == h for d in naming)]
+    if undeclared:
+        lines.append(f"higher layer present, relation undeclared: {', '.join(undeclared)}")
+    return lines
+
+
+def entry_lines(hit_layer: str, hit_key: str, inside: list, conns: dict, builds: dict) -> list:
+    """What a hit itself declares: one line per in-chain declaration whose entry is this hit, capped and counted."""
+    own = [d for d in inside if d.layer == hit_layer and d.entry_key == hit_key]
+    lines = []
+    for d in own[:MAX_RELATION_LINES]:
+        where = f"§ {d.entry_section[0]!r} (level {d.entry_section[1]}) " if d.entry_section else ""
+        lines.append(f"{where}declares {d.mode} of {d.target_label()} — " + "; ".join(assess(d, conns, builds)))
+    if len(own) > MAX_RELATION_LINES:
+        lines.append(f"+{len(own) - MAX_RELATION_LINES} more declaration(s) by this entry, not shown "
+                     f"(build_indexes.py --relations {hit_layer} lists them)")
+    return lines

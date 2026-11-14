@@ -56,10 +56,34 @@ while it stays rare.
   builder's reads of the layers a module depends on, its relations report, and the previous build's embedding
   cache. When that cache is refused, the build re-embeds every document and says why.
 
-Existing calls are unchanged. The new parameters reach chat once the image is rebuilt
-(`docker compose up -d --build corpus-search` from `Python/`) and Claude Desktop is restarted. A chain layer that
-is neither an indexed module nor declared loaded in `indexer.cfg` `[rules_layers] not_searched` refuses the whole
+Existing calls are unchanged. The new parameters reach chat once the images are rebuilt
+(`docker compose up -d --build corpus-search index-tools` from `Python/`; the image now also carries
+`rules_chain.py`, which chain search and chain status need) and Claude Desktop is restarted. A chain layer that is
+neither an indexed module nor declared loaded in `indexer.cfg` `[rules_layers] not_searched` refuses the whole
 chain, by design; `index_status(campaign=...)` names the layer.
+
+## 2026-10-24
+
+### Added
+
+- **Rules layers.** A game-system module's manifest can declare `kind` (`system`, `variant`, `thirdparty` or
+  `homebrew`) and `extends` (the layer it builds on), and a `relations.yaml` beside it can declare how its entries
+  relate to another layer's: an override, an extension, a partition and so on, each with a status and an optional
+  hash pin. Such a module is **layered**: `build_indexes.py --system <module>` builds it at schema 3 with its layer
+  metadata and validated relations, checked against the layers it depends on from one registry snapshot. An entry
+  or target that does not resolve refuses the build, and so does a dependency rebuilt during it. A module declaring
+  neither is built exactly as before, at schema 2.
+- **`build_indexes.py --relations <module>`** reports, read-only, each declared relation's pin state (pinned,
+  unpinned or changed) and the current target hash to pin.
+- **`--all-systems` builds in dependency order.** A dependency cycle is reported. The layers in it, and those
+  depending on them, are not built, and the rest still build.
+- **`indexer.cfg` `[rules_layers] private_roots`** declares folders that hold private layers, such as a user's own
+  homebrew. They are discovered as layer roots and kept out of the corpus search index, but still listed in the
+  directory indexes. The section is strict: a misspelled key, a bare line or an empty value fails the build rather
+  than silently disabling the exclusion. With no section, every output is unchanged.
+
+Layered (schema-3) modules are searched through `chain=` (2026-11-13). Single-system `search_corpus(system=...)` and
+`index_status(system=...)` read schema 2 only.
 
 ## 2026-09-26
 

@@ -28,6 +28,7 @@ COPY series_search_mcp_server.py .
 COPY build_indexes.py .
 COPY cfg_loader.py .
 COPY system_index.py .
+COPY rules_chain.py .
 COPY embedding.py .
 
 # Switch to non-root user for runtime

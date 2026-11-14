@@ -39,7 +39,7 @@ This file supplements `file_system_instructions.md`. Load when needed for:
 TOOL SCHEMA REFERENCE
 =====================
 
-> **Dated snapshot, not live truth.** Cached from live introspection, last re-verified 2026-09-05 against `mcp/filesystem:2026.8.31`. Live docstrings via `tool_search` are authoritative — on any parameter error or doubt, trust the live schema over this document, then update this section.
+> **Dated snapshot, not live truth.** Cached from live introspection, last re-verified 2026-11-14 against all five live servers (`mcp/filesystem:2026.8.31` and the corpus-search and index-tools images rebuilt that day). Live docstrings via `tool_search` are authoritative — on any parameter error or doubt, trust the live schema over this document, then update this section.
 
 > **Greppable convention — do not break.** Each tool is a `` ### `server:tool_name` `` header followed by a fenced block whose first line is `params:`; each parameter is one line, `name: type (required)` for required or `name?: type` for optional. Prose stays outside the fenced block. The schema-drift linter (`Python/check_schema_drift.py`) parses tool names + params from these blocks and ignores all prose — keep the form exact when adding or editing tools, or the linter silently under-reports. Run it after any tool-surface change; it is what verified the snapshot date above.
 

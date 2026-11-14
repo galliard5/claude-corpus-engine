@@ -35,6 +35,32 @@ while it stays rare.
 
 ---
 
+## 2026-11-13
+
+### Added
+
+- **Chain-aware rules search.** `corpus-search:search_corpus` takes `campaign` (a campaign folder whose
+  `Campaign_Profile.md` declares a `chain`) or `chain` (layer names, lowest first), and searches that rules chain one
+  layer at a time from a single registry snapshot. Hits are grouped by layer, most specific first, each ranked by its
+  own database, and no score is compared across layers. Every hit states the relations the chain's layers have
+  declared about it, or that none is recorded. `per_layer` caps each layer, and `limit` stays the total cap. A chain
+  that cannot be searched as declared refuses and searches nothing.
+- **`index_status` takes `campaign` or `chain`** and reports how that chain resolves: each layer's role, build and
+  freshness, the snapshot token, whether the adaptation inputs are current, and why a chain search would refuse. It
+  searches nothing.
+- **`get_section` and `get_system_record` take `expected_build`.** A chain search hit's `Fetch:` line names the
+  module and build. Given that build, the fetch serves only from it, and refuses if the module has been rebuilt
+  since. Without it, both tools behave as before.
+- Every read of a published module database is checked at the moment it is opened: one that has become a link or
+  junction leading out of `index/systems` is refused unread. This covers search, fetch and status, and the
+  builder's reads of the layers a module depends on, its relations report, and the previous build's embedding
+  cache. When that cache is refused, the build re-embeds every document and says why.
+
+Existing calls are unchanged. The new parameters reach chat once the image is rebuilt
+(`docker compose up -d --build corpus-search` from `Python/`) and Claude Desktop is restarted. A chain layer that
+is neither an indexed module nor declared loaded in `indexer.cfg` `[rules_layers] not_searched` refuses the whole
+chain, by design; `index_status(campaign=...)` names the layer.
+
 ## 2026-09-26
 
 ### Fixed

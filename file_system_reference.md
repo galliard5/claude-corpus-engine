@@ -224,7 +224,10 @@ params:
   missing_filter?: string|null     — name|keywords|description|type (corpus hygiene)
   show_sections?: boolean          — default true; adds the Sections: line (below)
   system?: string|null             — a registered game-system module id; searches its database, not the corpus
-  representation_filter?: string|null — with system only: verbatim | compact | dataset, or a comma list
+  representation_filter?: string|null — with system, campaign or chain: verbatim | compact | dataset, or a comma list
+  campaign?: string|null           — a campaign folder name; searches that campaign's rules chain
+  chain?: string|null              — layer names, lowest first, comma-separated; searches that rules chain
+  per_layer?: integer|null         — with campaign or chain only: the most hits one layer may give
 ```
 **`system` — a game-system module's own rules database.** Each module that declares an `index.cfg` has its own
 database, built by `build_indexes.py --system <module>`, so rules never mix into lore results. `system` takes a
@@ -239,7 +242,38 @@ module, its **representation** and its **authority** — and a `Source:` line wi
   `mode="vector"` over datasets alone returns nothing, by design; `hybrid` returns their lexical hits.
 
 `representation_filter` accepts one value or a comma list; an empty or invalid value, or using it without `system`,
-is an error.
+`campaign` or `chain`, is an error. With a chain it applies to every searched layer.
+
+**`campaign` / `chain` — a rules chain, searched layer by layer.** Give at most one of `system`, `campaign` and
+`chain`. `campaign` names a campaign folder (matched case-insensitively) whose `Campaign_Profile.md` declares a
+`chain`; `chain` gives the layer names directly, lowest first (e.g. `"basesys,house"`), with no campaign and so no
+adaptation profile or sidecars. A chain holds at most 8 layers. The chain is resolved once, from one registry
+snapshot (`index_status(campaign=... | chain=...)` shows the same resolution), and every layer database the snapshot
+names is opened and checked to still be that build before any query runs.
+- **Grouped by layer, most specific first.** Each indexed layer is queried in its own database with its own ranking.
+  Scores from different databases are not comparable, so none are shown; each hit carries its rank within its layer.
+- **The header** reports the resolved chain, each layer's role (indexed; declared loaded and not searched; or
+  missing), build and source freshness, the snapshot token, whether the adaptation inputs are current (otherwise
+  the retrieval is labelled non-authoritative), declared sidecars, and how many hits each layer gave. A layer
+  declared loaded (`indexer.cfg` `[rules_layers] not_searched`) is listed but never searched; nothing here can
+  verify that the caller has it in context.
+- **Relations.** Every hit gets a `Relations:` line listing what the chain's layers have *declared* about it, with
+  each declaration's status and whether its target has changed since it was declared — or "no override recorded",
+  which is not a claim that the hit governs. Conflicting declarations are listed and marked unresolved; search never
+  reconciles them. A hit that itself declares relations adds `Declares:` lines. Long lists are capped, and what is
+  not shown is counted.
+- **`Fetch:` line.** Each hit ends with the exact call that retrieves it, with its module and build filled in:
+  `get_section(path=..., system=..., expected_build=...)`, or `get_system_record(system=..., entry_key=...,
+  expected_build=...)` for a record.
+- **Bounds.** `limit` stays the total cap (default 10, at most 200). `per_layer` caps each layer: a whole number
+  from 1 to 200, default `min(5, limit)`, and an error without `campaign` or `chain`. Every layer with a hit gets one
+  slot before any layer gets a second. When `limit` is smaller than the number of layers with hits, the search
+  refuses and names the smallest `limit` that covers them all.
+- **Refusals search nothing.** A chain that cannot be searched as declared refuses with the full resolution
+  header: an unknown or unbuilt layer, a broken publication, a layer both registered and declared not searched, or a
+  layer database that changed or was rebuilt after the chain resolved ("search again"). Stale sources are a warning,
+  not a refusal. `mode="vector"`/`"hybrid"` falls back to `fts` per layer, saying so, when a layer has no vector
+  table.
 **Modes:**
 - `"fts"` *(default)* — full-text BM25; exact terms, FTS5 syntax below. Unchanged legacy behaviour.
 - `"vector"` — semantic nearest-neighbour over embeddings; finds meaning-similar docs with no shared words. Query is plain language.
@@ -277,8 +311,14 @@ params:
   heading?: string|null            — section title; omit to list sections without bodies
   level?: integer                  — heading depth to split on, 1-6 (default 2 = ##)
   system?: string|null             — read a document from that module's database (module-relative path)
+  expected_build?: string|null     — with system only: serve only from this build (a chain hit's Fetch line)
 ```
 With `system`, only documents are addressable; asked for a dataset file, it points to `get_system_record`.
+
+**`expected_build`** pins the fetch to the build a chain search hit came from. It must be a build id, and must be
+the build the registry publishes now; if the module has been rebuilt since, the call refuses ("search again")
+rather than answer from the new build. A served section names its build in the header (`[build <id>]`). Without
+`system` it is an error; omitted, the output is unchanged.
 **Heading matching is forgiving.** Case, whitespace, and dash style are normalized, and a unique prefix or substring is enough — `"supply cadence"` resolves `"The Estate's Week — Supply Cadence"`. An ambiguous request returns the candidates rather than guessing; an unmatched one returns the full section list.
 
 **Content comes from the index, not from disk** — `path` is matched for equality against `corpus_fts.path`, so only indexed documents are addressable, and results reflect the last index build (check `index_status`). Sections are derived on the fly; nothing about them is stored.
@@ -297,7 +337,11 @@ params:
   entry_key?: string|null          — "rec:<dataset>/<id>", copied from a search hit
   dataset?: string|null            — with record_id: the dataset's declared name
   record_id?: string|null          — with dataset: the record's id
+  expected_build?: string|null     — serve only from this build (a chain hit's Fetch line)
 ```
+`expected_build` works as for `get_section`: the record is served only while that build is the published one, and a
+served record names it (`· build <id>`). It also reads records from a layered (schema-3) module, which a chain hit
+may name.
 **Use case:** a GM resolving a hit needs the exact stat block. Search finds the record's key; this returns the record
 itself, so a statistic is never reconstructed from a snippet or from memory.
 
@@ -307,10 +351,18 @@ the registered module databases.
 ```
 params:
   system?: string|null             — report one module database instead of the corpus
+  campaign?: string|null           — report how a campaign's rules chain resolves
+  chain?: string|null              — report how an explicit chain (layer names, lowest first) resolves
 ```
 With `system`, it reports the module's published build and row counts, whether the registry and database agree,
 and — recomputed from the module's own files, not trusted from the build — whether its sources have **changed since
 the build**. A consistent publication is not proof of freshness; the two lines answer different questions.
+`system` reads non-layered (schema-2) modules; for a layered module it says so and points to `chain=`.
+
+With `campaign` or `chain` (at most one of the three), it reports how that rules chain resolves, exactly as a chain
+search would: each layer's role, build and source freshness, the snapshot token, whether the adaptation inputs are
+current, declared sidecars, and — when a chain search would refuse — every reason why. It is read-only and searches
+nothing.
 
 When the builder has logged builds, two further lines report what the last build actually cost — runtime, whether it was cold or reused cached embeddings, the FTS/embed split, which path invoked it — and the median and range over recent builds. A build labelled **last logged build** rather than *last build* did not produce the index you are querying; treat its numbers as background, not provenance.
 

@@ -20,6 +20,10 @@ Command line arguments:
 #   mutants now target it there, and a fourth checks the builder still delegates to it.
 # changed 2026-11-12: Codex 951 made discover contained; the "private roots ignored" mutant was repointed at its new
 #   loop head (same mutation: discovery over Game_Systems only).
+# changed 2026-11-13: four mutants for containment at the builder's opens (Codex 965): each of the three read-only
+#   opens of a published generation made unchecked, and system_index.open_contained without its re-check once open.
+# changed 2026-11-13: three mutants for the embedding-cache ATTACH (Codex 967): attached unchecked, not re-checked
+#   once attached, and a refusal left out of the build's errors.
 """
 
 import io
@@ -178,6 +182,29 @@ MUTANTS = [
     ("build: prune ignores private roots", "bi",
      '        gone = [m for m in reg["systems"] if not system_index.cfgs_for(root, m, private_roots)]',
      '        gone = [m for m in reg["systems"] if not system_index.cfgs_for(root, m)]'),
+    # ---- containment at the builder's opens (Codex 965)
+    ("builder open: the dependency snapshot opens unchecked", "bi",
+     "            conn, why = system_index.open_contained(path, sdir, _open_published_ro)\n"
+     "            if conn is None:                # containment enforced at the open itself",
+     "            conn, why = _open_published_ro(path), None\n"
+     "            if conn is None:                # containment enforced at the open itself"),
+    ("builder open: a relation target opens unchecked", "bi",
+     "                conn, why = system_index.open_contained(path, sdir, _open_published_ro)\n"
+     "                if conn is None:            # containment enforced at the open itself (Codex 965)",
+     "                conn, why = _open_published_ro(path), None\n"
+     "                if conn is None:            # containment enforced at the open itself (Codex 965)"),
+    ("builder open: the report's own database opens unchecked", "bi",
+     "    conn, why = system_index.open_contained(own, sdir, _open_published_ro)",
+     "    conn, why = _open_published_ro(own), None"),
+    ("builder open: not re-checked once open", "si",
+     "    if contained_real(path, sdir)[0] != real:", "    " + OFF),
+    # ---- containment at the embedding-cache ATTACH (Codex 967)
+    ("embed cache: attached unchecked", "bi",
+     "    real, why = system_index.contained_real(live_db, sdir)", "    real, why = Path(live_db), None"),
+    ("embed cache: not re-checked once attached", "bi",
+     "        if system_index.contained_real(live_db, sdir)[0] != real:", "        " + OFF),
+    ("embed cache: a refusal not reported", "bi",
+     "        if refused:                         # not fatal", "        if False:                           # not fatal"),
 ]
 
 # Mutants that CANNOT be killed: none are claimed. Every survivor fails the run and is reported.

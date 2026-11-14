@@ -67,6 +67,14 @@ Replaces: build_directory_indexes.py + build_search_index.py
 # changed 2026-11-12: chain-aware search stage 2 — the [rules_layers] section is parsed by the shared
 #   system_index.parse_rules_layers, which also accepts not_searched (known module ids, case-insensitive); a section
 #   may declare either key, and each key present must name something.
+# changed 2026-11-13: the builder's three read-only opens of published module databases (the dependency snapshot's
+#   db_info read, each relation target's database in check_relations, and the module's own database in
+#   relations_report) are contained at the open itself, through system_index.open_contained (Codex 965). A
+#   generation that turns into a link leading out of index/systems after it was resolved is refused before it is
+#   opened, and one that changes while being opened is closed unread. Contained builds and reports are unchanged.
+# changed 2026-11-13: the embedding-cache seed's read-only ATTACH of the live generation is contained the same way
+#   (Codex 967): checked at the attach, the resolved path attached, re-checked before any query, detached unread on
+#   refusal. A refusal is reported in the build's errors and the build embeds every document afresh.
 
 Usage:
     python build_indexes.py                   # reads indexer.cfg, writes all outputs
@@ -932,15 +940,27 @@ class SystemBuild:
     runtime_s:   float = 0.0
 
 
-def _seed_embed_cache(conn, live_db) -> None:
-    """Copy the live generation's embedding cache into a new one, so unchanged documents are not re-embedded."""
+def _seed_embed_cache(conn, live_db, sdir: Path = None):
+    """Copy the live generation's embedding cache into a new one, so unchanged documents are not re-embedded.
+
+    Returns None when the cache was copied or is simply unavailable (the build then embeds everything, as before),
+    or why the live generation was refused. The read-only ATTACH is contained at the attach itself (Codex 967):
+    the generation must still resolve inside `sdir`, the resolved path is what is attached, and it is checked again
+    once attached, before anything is queried or copied; a refused attachment is detached unread."""
     if live_db is None or not Path(live_db).exists():
-        return
+        return None
+    if sdir is None:
+        raise ValueError("_seed_embed_cache needs the index/systems directory the live generation lies in")
+    real, why = system_index.contained_real(live_db, sdir)
+    if real is None:
+        return why
     try:
-        conn.execute("ATTACH DATABASE ? AS live", (f"{Path(live_db).as_uri()}?mode=ro",))
+        conn.execute("ATTACH DATABASE ? AS live", (f"{real.as_uri()}?mode=ro",))
     except sqlite3.Error:
-        return
+        return None
     try:
+        if system_index.contained_real(live_db, sdir)[0] != real:
+            return system_index.CHANGED_DURING_OPEN
         have = {r[0] for r in conn.execute("SELECT name FROM live.sqlite_master WHERE type = 'table'")}
         if {"embed_cache", "embed_cache_info"} <= have:
             conn.execute("CREATE TABLE IF NOT EXISTS embed_cache (hash TEXT PRIMARY KEY, embedding BLOB NOT NULL)")
@@ -991,14 +1011,23 @@ def _section_json(address) -> str:
         if address.section else ""
 
 
-def check_relations(cfg: "system_index.SystemCfg", own_conn, dep_dbs: dict) -> list:
+def _open_published_ro(real: Path):
+    """The read-only opener for system_index.open_contained: a published generation, at its resolved path."""
+    return sqlite3.connect(f"{Path(real).as_uri()}?mode=ro", uri=True)
+
+
+def check_relations(cfg: "system_index.SystemCfg", own_conn, dep_dbs: dict, sdir: Path) -> list:
     """Resolve every declared relation: its entry in this layer's own database (open on `own_conn`), its target in
-    the target layer's published database (`dep_dbs`: {layer: path}, from one registry snapshot). Returns
-    [(Relation, current target hash, pin state)]; pin state is pinned (matches target_sha256), unpinned (none
-    declared) or changed (declared but different). An entry or target that does not resolve is an orphan, and the
-    whole check fails naming each one and the fix — a relation never publishes pointing at nothing."""
+    the target layer's published database (`dep_dbs`: {layer: path}, from one registry snapshot, each inside
+    `sdir`). Returns [(Relation, current target hash, pin state)]; pin state is pinned (matches target_sha256),
+    unpinned (none declared) or changed (declared but different). An entry or target that does not resolve is an
+    orphan, and the whole check fails naming each one and the fix — a relation never publishes pointing at nothing.
+    Each target database is opened contained (system_index.open_contained): one that has become a link out of
+    index/systems, or changes while being opened, fails the check without being read."""
+    if dep_dbs and sdir is None:
+        raise ValueError("check_relations needs the index/systems directory its target databases lie in")
     out, problems = [], []
-    conns = {}
+    conns, refused = {}, set()
     try:
         for r in cfg.relations:
             at = f"{system_index.RELATIONS_FILE} item {r.index}"
@@ -1011,8 +1040,16 @@ def check_relations(cfg: "system_index.SystemCfg", own_conn, dep_dbs: dict) -> l
                 problems.append(f"{at}: target layer {r.target.layer!r} is not built; build it first "
                                 f"(build_indexes.py --system {r.target.layer})")
                 continue
+            if r.target.layer in refused:
+                continue
             if r.target.layer not in conns:
-                conns[r.target.layer] = sqlite3.connect(f"{Path(path).as_uri()}?mode=ro", uri=True)
+                conn, why = system_index.open_contained(path, sdir, _open_published_ro)
+                if conn is None:            # containment enforced at the open itself (Codex 965)
+                    refused.add(r.target.layer)
+                    problems.append(f"the database of target layer {r.target.layer!r} {why}; no relation targeting "
+                                    f"it was checked — build again")
+                    continue
+                conns[r.target.layer] = conn
             current, why = system_index.resolve_unit(conns[r.target.layer], r.target)
             if why:
                 problems.append(f"{at}: target is orphaned: {why}")
@@ -1028,11 +1065,12 @@ def check_relations(cfg: "system_index.SystemCfg", own_conn, dep_dbs: dict) -> l
 
 
 def build_system_db(cfg: "system_index.SystemCfg", gen_path: Path, live_db, build_id: str,
-                    fingerprint: str, build_vectors: bool, depends_on: dict = None, dep_dbs: dict = None) -> tuple:
+                    fingerprint: str, build_vectors: bool, depends_on: dict = None, dep_dbs: dict = None,
+                    sdir: Path = None) -> tuple:
     """Build one module's database into a new generation file. Raises on any failure; the caller removes the
     file. Returns (SearchStats, counts per representation). A layered module's database is schema 3 and also
     holds layer_info and its validated relations; `depends_on` ({layer: build_id}) and `dep_dbs` ({layer: path})
-    come from the caller's one registry snapshot."""
+    come from the caller's one registry snapshot, and `sdir` is the index/systems directory they lie in."""
     stats = SearchStats()
     fts_start = time.perf_counter()
     conn = sqlite3.connect(f"{gen_path.as_uri()}?mode=rwc", uri=True)
@@ -1041,7 +1079,10 @@ def build_system_db(cfg: "system_index.SystemCfg", gen_path: Path, live_db, buil
         want_vectors = build_vectors and embedding.AVAILABLE
         if embedding.AVAILABLE:
             embedding.load_vec(conn)
-        _seed_embed_cache(conn, live_db if want_vectors else None)
+        refused = _seed_embed_cache(conn, live_db if want_vectors else None, sdir)
+        if refused:                         # not fatal: nothing was read, and every document is embedded afresh
+            stats.errors.append(("<embedding cache>", f"previous embedding cache not reused: the live database "
+                                                      f"{refused}; unchanged documents are embedded again"))
         _create_search_schema(cur)
         if want_vectors:
             cur.execute(f"CREATE VIRTUAL TABLE corpus_vec USING vec0(embedding float[{embedding.EMBED_DIM}])")
@@ -1112,7 +1153,7 @@ def build_system_db(cfg: "system_index.SystemCfg", gen_path: Path, live_db, buil
                 (cfg.effective_kind, cfg.extends, cfg.manifest_sha256, cfg.relations_sha256,
                  json.dumps(depends_on or {}, sort_keys=True)),
             )
-            for r, current, state in check_relations(cfg, conn, dep_dbs or {}):
+            for r, current, state in check_relations(cfg, conn, dep_dbs or {}, sdir):
                 cur.execute(
                     "INSERT INTO relations(item, entry_key, entry_section, target_layer, target_key, target_section, "
                     "mode, status, decided, decider, declared_sha256, current_sha256, pin_state) "
@@ -1159,7 +1200,7 @@ def _dependency_snapshot(cfg: "system_index.SystemCfg", sdir: Path, reg: dict) -
     Each must be registered, its generation file present, its own db_info must agree with the registry (build id,
     module and schema version), and that schema must be one this builder can validate against
     (SUPPORTED_DEPENDENCY_SCHEMAS); otherwise the build refuses before anything publishes, naming the layer and the
-    fix."""
+    fix. The db_info read is contained at the open itself (system_index.open_contained, Codex 965)."""
     depends_on, dbs, problems = {}, {}, []
     for layer in cfg.dependencies():
         entry = reg["systems"].get(layer)
@@ -1174,7 +1215,11 @@ def _dependency_snapshot(cfg: "system_index.SystemCfg", sdir: Path, reg: dict) -
             continue
         row = None
         if path.exists():
-            conn = sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True)
+            conn, why = system_index.open_contained(path, sdir, _open_published_ro)
+            if conn is None:                # containment enforced at the open itself
+                problems.append(f"the database registered for {layer!r} {why}; nothing was validated against it — "
+                                f"build again")
+                continue
             try:
                 row = conn.execute("SELECT build_id, module, schema_version FROM db_info LIMIT 1").fetchone()
             except sqlite3.Error:
@@ -1231,7 +1276,8 @@ def build_and_publish(root: Path, index_dir: Path, cfg_path: Path, build_vectors
             live = None
     published = False
     try:
-        stats, counts = build_system_db(cfg, tmp, live, build_id, fingerprint, build_vectors, depends_on, dep_dbs)
+        stats, counts = build_system_db(cfg, tmp, live, build_id, fingerprint, build_vectors, depends_on, dep_dbs,
+                                        sdir)
         after = system_index.fingerprint(system_index.load_system_cfg(cfg_path), depends_on)
         if after != fingerprint:
             raise system_index.SystemIndexError(
@@ -1405,6 +1451,9 @@ def run_systems(args, root: Path, index_dir: Path, private_roots: tuple = ()) ->
         else:
             print(f"  Vectors:    {s.vec_indexed} indexed, {s.vec_embedded} newly embedded, "
                   f"{s.vec_reused} reused (documents only; dataset rows are full-text only)")
+            for path, err in s.errors:
+                if path == "<embedding cache>":
+                    print(f"    [!] {err}")
         if b.collected:
             print(f"  Collected:  {', '.join(b.collected)}")
         print(f"  Runtime:    {b.runtime_s:.2f}s")
@@ -1565,9 +1614,12 @@ def relations_report(root: Path, index_dir: Path, module: str, private_roots: tu
                                             f"{module}), or fix the errors that build reports")
     own = system_index.resolve_db(sdir, module, entry)
     _deps, dep_dbs = _dependency_snapshot(cfg, sdir, reg)
-    conn = sqlite3.connect(f"{own.as_uri()}?mode=ro", uri=True)
+    conn, why = system_index.open_contained(own, sdir, _open_published_ro)
+    if conn is None:                        # containment enforced at the open itself (Codex 965)
+        raise system_index.SystemIndexError(f"{module}: its published database {why}; nothing was reported — run "
+                                            f"the report again")
     try:
-        return check_relations(cfg, conn, dep_dbs)
+        return check_relations(cfg, conn, dep_dbs, sdir)
     finally:
         conn.close()
 

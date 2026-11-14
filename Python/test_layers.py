@@ -28,6 +28,13 @@ THE CONTRACTS THESE TESTS PIN (design: Working_Documents/Chain_Search_Design_Pro
                   and section hashes ignore line endings and trailing whitespace, and every content change shows.
   Order           dependency_order puts every layer after its extends parent and relation targets; a cycle names
                   every stuck layer.
+  Containment     the builder's three read-only opens of a published generation (the dependency snapshot, a relation
+                  target, the reported module's own database) refuse a generation redirected out of index/systems
+                  after it was resolved without opening it, and close one redirected while being opened unread; in
+                  a build, nothing publishes (Codex 965). The embedding-cache seed's ATTACH of the live generation is
+                  contained the same way: never attached when redirected, detached unread when redirected during the
+                  attach, the refusal reported in the build's errors; a contained warm cache is still reused, and an
+                  unavailable one still falls back quietly (Codex 967).
 
 Usage:
     python -m unittest test_layers -v
@@ -41,6 +48,9 @@ Command line arguments:
 #   [rules_layers] section failing open; unsupported or disagreeing dependency schemas).
 # changed 2026-11-12: stage 2 added the not_searched key: the strictness test now expects it to name a known module,
 #   and an empty section to be refused as declaring neither key.
+# changed 2026-11-13: TestBuilderContainment (Codex 965): a redirect after resolution and during the open, at each of
+#   the builder's three opens of a published generation, through both the build and the relations report.
+# changed 2026-11-13: TestEmbedCacheContainment (Codex 967): the embedding-cache ATTACH, on Codex's recipe.
 """
 
 import argparse
@@ -693,6 +703,275 @@ class TestLayeredBuild(Tmp):
         make_layer(self.root, module="hb2", dirname="Hb2", relations=relation(), kind="homebrew", extends="basesys")
         with self.assertRaisesRegex(si.SystemIndexError, "hb2 is not built"):
             bi.relations_report(self.root, self.index, "hb2", (PRIVATE,))
+
+
+# ================================================================ containment at the builder's opens (Codex 965)
+
+class Recording:
+    """A connection stand-in that records any use of the connection it wraps."""
+    def __init__(self, conn):
+        self.conn, self.used, self.closed = conn, [], False
+
+    def execute(self, *a, **k):
+        self.used.append("execute")
+        return self.conn.execute(*a, **k)
+
+    def cursor(self):
+        self.used.append("cursor")
+        return self.conn.cursor()
+
+    def close(self):
+        self.closed = True
+        self.conn.close()
+
+    def __getattr__(self, name):
+        self.used.append(name)
+        return getattr(self.conn, name)
+
+
+class TestBuilderContainment(Tmp):
+    """The builder's three read-only opens of a published generation — the dependency snapshot's db_info read, a
+    relation target's database in check_relations, and the module's own database in relations_report — are
+    contained at the open itself. The generation is renamed outside the corpus (outside.db) with a file symlink left
+    at its path, either right after it is resolved or while it is being opened; each case runs in a fresh fixture."""
+
+    CASES = [  # (label, redirected module, when the redirect is armed, the call, what the refusal says)
+        ("build: dependency snapshot", "basesys", "resolve", "build",
+         "the database registered for 'basesys' {why}; nothing was validated against it"),
+        ("build: relation target", "basesys", "check_relations", "build",
+         "the database of target layer 'basesys' {why}; no relation targeting it was checked"),
+        ("report: dependency snapshot", "basesys", "resolve", "report",
+         "the database registered for 'basesys' {why}; nothing was validated against it"),
+        ("report: relation target", "basesys", "check_relations", "report",
+         "the database of target layer 'basesys' {why}; no relation targeting it was checked"),
+        ("report: the module's own database", "hb", "resolve", "report",
+         "hb: its published database {why}; nothing was reported"),
+    ]
+    ESCAPED = "now resolves outside index/systems (through a link or junction), so it was not opened"
+
+    def fresh(self):
+        tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name) / "corpus"
+        self.root.mkdir()
+        self.index = self.root / "index"
+        self.outside = Path(tmp.name) / "outside.db"
+        self.build(make_base(self.root))
+        self.hb_cfg = make_layer(self.root, relations=relation())
+
+    def gen(self, module):
+        return self.sdir / self.registry()["systems"][module]["db"]
+
+    def redirected(self, module, arm, call, during_open):
+        """Run the build or the report with `module`'s generation redirected. during_open=False: the swap comes when
+        `arm` fires (resolve_db returning for that module, or check_relations being entered). during_open=True: the
+        same event only arms it, and the swap comes inside the next sqlite3.connect of that generation, just before
+        the real connect. Returns (the SystemIndexError raised or None, every connect of the generation or
+        outside.db after the swap, the Recording of a connection opened during the swap or None)."""
+        gen, armed, swapped, opened, rec = self.gen(module), [], [], [], []
+        real_connect, real_resolve, real_check = sqlite3.connect, si.resolve_db, bi.check_relations
+
+        def swap():
+            gen.rename(self.outside)
+            try:
+                gen.symlink_to(self.outside)
+            except OSError as e:
+                self.outside.rename(gen)
+                self.skipTest(f"cannot make a file symlink here ({e})")
+            swapped.append(1)
+
+        def fire():
+            if not armed:
+                armed.append(1)
+                if not during_open:
+                    swap()
+
+        def resolve(sdir, mod, entry):
+            got = real_resolve(sdir, mod, entry)
+            if arm == "resolve" and mod == module:
+                fire()
+            return got
+
+        def check(*a, **k):
+            if arm == "check_relations":
+                fire()
+            return real_check(*a, **k)
+
+        def spy(db, *a, **k):
+            names = (gen.name in str(db)) or ("outside.db" in str(db))
+            if during_open and armed and not swapped and gen.name in str(db):
+                swap()
+                opened.append(str(db))
+                rec.append(Recording(real_connect(db, *a, **k)))
+                return rec[-1]
+            if swapped and names:
+                opened.append(str(db))
+            return real_connect(db, *a, **k)
+
+        err = None
+        try:
+            with mock.patch.object(si, "resolve_db", side_effect=resolve), \
+                    mock.patch.object(bi, "check_relations", side_effect=check), \
+                    mock.patch.object(sqlite3, "connect", side_effect=spy):
+                if call == "build":
+                    self.build(self.hb_cfg)
+                else:
+                    bi.relations_report(self.root, self.index, "hb", (PRIVATE,))
+        except si.SystemIndexError as e:
+            err = e
+        self.assertTrue(swapped, "the redirect never happened")
+        return err, opened, (rec[0] if rec else None)
+
+    def run_cases(self, during_open):
+        why = si.CHANGED_DURING_OPEN if during_open else self.ESCAPED
+        for label, module, arm, call, refusal in self.CASES:
+            with self.subTest(case=label):
+                self.fresh()
+                if call == "report":
+                    self.build(self.hb_cfg)
+                    rows = bi.relations_report(self.root, self.index, "hb", (PRIVATE,))     # served while contained
+                    self.assertEqual([s for _r, _c, s in rows], ["unpinned"])
+                before, gens = self.registry_bytes(), self.generations()
+                err, opened, rec = self.redirected(module, arm, call, during_open)
+                self.assertIsNotNone(err, "not refused")
+                self.assertIn(refusal.format(why=why), str(err))
+                if during_open:
+                    self.assertEqual(len(opened), 1, opened)
+                    self.assertEqual((rec.used, rec.closed), ([], True))               # closed unread
+                else:
+                    self.assertEqual(opened, [])                                       # never opened
+                self.assertEqual(self.registry_bytes(), before)                        # nothing published
+                self.assertEqual(self.generations(), gens)
+                self.assertFalse(list(self.sdir.glob("*.tmp.db")))
+
+    def test_a_redirect_after_resolution_is_refused_before_each_open(self):
+        self.run_cases(during_open=False)
+
+    def test_a_redirect_during_the_open_is_closed_unread(self):
+        self.run_cases(during_open=True)
+
+    def test_a_contained_build_and_report_open_through_the_check(self):
+        self.fresh()
+        seen = []
+        real = si.open_contained
+
+        def spy(path, sdir, opener):
+            seen.append(Path(path).name.split(".")[0])
+            return real(path, sdir, opener)
+        with mock.patch.object(si, "open_contained", side_effect=spy):
+            self.build(self.hb_cfg)
+            self.assertEqual(seen, ["basesys", "basesys"])                  # dependency snapshot, relation target
+            seen.clear()
+            rows = bi.relations_report(self.root, self.index, "hb", (PRIVATE,))
+        self.assertEqual(seen, ["basesys", "hb", "basesys"])                # snapshot, own database, target
+        self.assertEqual([s for _r, _c, s in rows], ["unpinned"])
+
+
+class SqlLog:
+    """A connection stand-in that logs each statement's first word, and can run a hook just before an ATTACH."""
+    def __init__(self, conn, before_attach=None):
+        self.conn, self.before_attach, self.log = conn, before_attach, []
+
+    def execute(self, sql, *a):
+        verb = sql.split()[0].upper()
+        if verb == "ATTACH" and self.before_attach:
+            self.before_attach()
+        self.log.append(verb)
+        return self.conn.execute(sql, *a)
+
+    def commit(self):
+        self.conn.commit()
+
+
+class TestEmbedCacheContainment(unittest.TestCase):
+    """Codex 967: the embedding-cache seed's read-only ATTACH of the live generation is contained at the attach — the
+    generation must still resolve inside index/systems, its resolved path is attached, and it is checked again before
+    anything is queried or copied; a refusal is detached unread. Codex's recipe: a synthetic registered generation with
+    embed_cache and embed_cache_info, resolved through resolve_db, then renamed to outside.db with a file symlink left
+    at its path, seeded into a new URI-enabled in-memory database (as build_system_db's own connection is)."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self.addCleanup(self._tmp.cleanup)
+        self.sdir = si.systems_dir(Path(self._tmp.name) / "corpus" / "index")
+        self.sdir.mkdir(parents=True)
+        self.outside = Path(self._tmp.name) / "outside.db"
+        name = f"basesys.{si.new_build_id()}.db"
+        c = sqlite3.connect(self.sdir / name)
+        c.execute("CREATE TABLE embed_cache (hash TEXT PRIMARY KEY, embedding BLOB NOT NULL)")
+        c.execute("CREATE TABLE embed_cache_info (model TEXT, dim INTEGER)")
+        c.execute("INSERT INTO embed_cache VALUES ('synthetic-cache', x'01020304')")
+        c.execute("INSERT INTO embed_cache_info VALUES ('synthetic-model', 4)")
+        c.commit()
+        c.close()
+        self.path = si.resolve_db(self.sdir, "basesys", {"db": name})
+        self.conn = sqlite3.connect("file::memory:", uri=True)
+        self.addCleanup(self.conn.close)
+
+    def swap(self):
+        self.path.rename(self.outside)
+        try:
+            self.path.symlink_to(self.outside)
+        except OSError as e:
+            self.outside.rename(self.path)
+            self.skipTest(f"cannot make a file symlink here ({e})")
+
+    def copied(self):
+        try:
+            return self.conn.execute("SELECT hash, hex(embedding) FROM embed_cache").fetchall()
+        except sqlite3.Error:
+            return []
+
+    def attached(self):
+        return [r[1] for r in self.conn.execute("PRAGMA database_list")]
+
+    def test_a_contained_warm_cache_is_reused(self):
+        log = SqlLog(self.conn)
+        self.assertIsNone(bi._seed_embed_cache(log, self.path, self.sdir))
+        self.assertEqual(self.copied(), [("synthetic-cache", "01020304")])
+        self.assertEqual(self.conn.execute("SELECT model, dim FROM embed_cache_info").fetchall(),
+                         [("synthetic-model", 4)])
+        self.assertEqual(self.attached(), ["main"])                                  # detached afterwards
+        self.assertEqual(log.log[0], "ATTACH")
+
+    def test_an_unavailable_cache_still_falls_back_quietly(self):
+        for live in (None, self.sdir / "basesys.gone.db"):
+            with self.subTest(live=live):
+                self.assertIsNone(bi._seed_embed_cache(self.conn, live, self.sdir))
+                self.assertEqual((self.copied(), self.attached()), ([], ["main"]))
+        self.path.write_bytes(b"not a database")                    # attaches, but holds no cache tables
+        self.assertIsNone(bi._seed_embed_cache(self.conn, self.path, self.sdir))
+        self.assertEqual((self.copied(), self.attached()), ([], ["main"]))
+
+    def test_a_redirect_after_resolution_is_never_attached(self):
+        self.swap()
+        log = SqlLog(self.conn)
+        why = bi._seed_embed_cache(log, self.path, self.sdir)
+        self.assertEqual((self.copied(), self.attached()), ([], ["main"]))          # nothing copied from outside
+        self.assertEqual(log.log, [])                                                # no ATTACH, no query
+        self.assertIn("now resolves outside index/systems (through a link or junction), so it was not opened",
+                      why or "")
+
+    def test_a_redirect_during_the_attach_is_detached_unread(self):
+        log = SqlLog(self.conn, before_attach=self.swap)
+        why = bi._seed_embed_cache(log, self.path, self.sdir)
+        self.assertEqual((self.copied(), self.attached()), ([], ["main"]))          # nothing copied from outside
+        self.assertEqual(log.log, ["ATTACH", "DETACH"])                              # nothing queried
+        self.assertEqual(why, si.CHANGED_DURING_OPEN)
+
+    def test_a_refusal_is_reported_and_the_build_carries_on(self):
+        tmp = Path(self._tmp.name) / "build"
+        cfg = si.load_system_cfg(make_base(tmp / "corpus"))
+        why = "now resolves outside index/systems (through a link or junction), so it was not opened"
+        gen = self.sdir / f".basesys.{si.new_build_id()}.tmp.db"
+        with mock.patch.object(bi, "_seed_embed_cache", return_value=why) as seed:
+            stats, counts = bi.build_system_db(cfg, gen, self.path, si.new_build_id(), "f" * 64, False,
+                                               sdir=self.sdir)
+        self.assertEqual(seed.call_args.args[2], self.sdir)
+        self.assertIn(("<embedding cache>", f"previous embedding cache not reused: the live database {why}; "
+                                            f"unchanged documents are embedded again"), stats.errors)
+        self.assertFalse(stats.vector_failed)
+        self.assertTrue(all(counts.values()))
 
 
 # ================================================================ dependency order

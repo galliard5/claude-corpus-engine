@@ -93,6 +93,8 @@ Command line arguments: none (library module).
 #   anything renders (a malformed mode crashed the search); declarations naming one unit are grouped by its canonical
 #   identity (unit_identity: get_section's heading normalisation, with level and whole-entry kept distinct), so
 #   equivalent spellings of one heading show their conflict.
+# changed 2026-11-14: a campaign or adaptation profile that is not valid UTF-8 refuses (or is non-authoritative)
+#   instead of raising, and the message says so (audit batch 1, Working_Documents/Chain_Search_Audit_Fable.md X1).
 """
 
 import hashlib
@@ -229,7 +231,7 @@ def find_campaign(root: Path, name: str) -> tuple:
 def _profile_fields(path: Path) -> tuple:
     data = system_index._read_manifest(path)
     if data is None:
-        return None, f"{path.name} has no readable fenced YAML block"
+        return None, f"{path.name} has no readable fenced YAML block (or is not valid UTF-8)"
     return data, None
 
 
@@ -341,7 +343,7 @@ def _check_adaptation(root: Path, res: Resolution, given, modules: list, known: 
         return
     data = system_index._read_manifest(path)
     if data is None:
-        a.status = f"{rel} has no readable fenced YAML profile; retrieval is non-authoritative"
+        a.status = f"{rel} has no readable fenced YAML profile (or is not valid UTF-8); retrieval is non-authoritative"
         return
     declared, why = _parse_chain(data.get("chain"))
     if why or [n.casefold() for n in declared] != modules:

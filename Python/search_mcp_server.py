@@ -95,6 +95,12 @@ changed 2026-11-13: Codex 961 — every remaining module open takes the same che
   _snapshot_generation applies system_index.contained_real, the rule check_publication (behind
   chain status and chain search) now applies too. Contained outputs are unchanged.
 
+changed 2026-11-14: audit batch 1 (Working_Documents/Chain_Search_Audit_Fable.md) — module databases
+  are opened immutable (_open_readonly(generation=True), system_index.generation_uri), so a -wal
+  or -journal beside a generation is never read; a connection whose sqlite-vec load fails is
+  closed before the error propagates; chain search gains the single-system path's catch-all, so
+  an embedding failure or a non-operational DatabaseError comes back as "[!] Unexpected error".
+
 changed 2026-09-25: records with no source of their own but row references
     (see system_index.py) show "Source (via row reference): <file> #<anchors> —
     row line(s) N  (<index record>)", one line per table on get_system_record and
@@ -179,19 +185,31 @@ mcp = FastMCP(
 )
 
 
-def _open_readonly(load_vectors: bool = False, db_path: Path | None = None) -> sqlite3.Connection:
+def _open_readonly(load_vectors: bool = False, db_path: Path | None = None,
+                   generation: bool = False) -> sqlite3.Connection:
     """Open the database in read-only mode using a SQLite URI.
 
     Rows come back as sqlite3.Row (name- and index-addressable). When
     load_vectors is True and the embedding deps are present, the sqlite-vec
     extension is loaded so corpus_vec K-NN queries work. db_path defaults to the
-    corpus; a module database is passed in after _resolve_system.
+    corpus; a module database is passed in after _resolve_system, with
+    generation=True, which opens it immutable (system_index.generation_uri: no
+    sidecar file is ever read). The corpus database is rebuilt in place, so it
+    is never opened immutable.
+
+    If loading the extension fails, the connection is closed before the error
+    propagates: the caller never received it, so nothing else would close it.
     """
-    uri = f"{(db_path or DB_PATH).as_uri()}?mode=ro"
+    path = db_path or DB_PATH
+    uri = system_index.generation_uri(path) if generation else f"{path.as_uri()}?mode=ro"
     conn = sqlite3.connect(uri, uri=True)
-    conn.row_factory = sqlite3.Row
-    if load_vectors and embedding.AVAILABLE:
-        embedding.load_vec(conn)
+    try:
+        conn.row_factory = sqlite3.Row
+        if load_vectors and embedding.AVAILABLE:
+            embedding.load_vec(conn)
+    except BaseException:
+        conn.close()
+        raise
     return conn
 
 
@@ -298,7 +316,7 @@ def _open_module(db_path: Path, system: str, load_vectors: bool = False, verb: s
         state = f" (index_status(system=\"{system}\") shows its state)" if verb != "try" else ""
         return None, (f"[!] Refusing the database registered for {system!r}: {why}. Nothing was read; {verb} "
                       f"again{state}.")
-    conn = _open_readonly(load_vectors=load_vectors, db_path=real)
+    conn = _open_readonly(load_vectors=load_vectors, db_path=real, generation=True)
     if _snapshot_generation(db_path)[0] != real:
         conn.close()
         return None, (f"[!] Refusing the database registered for {system!r}: it changed while being opened, so "
@@ -1213,7 +1231,7 @@ def _chain_search(query, limit, per_layer, mode, category_filter, type_filter, m
             row = None
             if real is not None:
                 try:
-                    conn = _open_readonly(load_vectors=mode != "fts", db_path=real)
+                    conn = _open_readonly(load_vectors=mode != "fts", db_path=real, generation=True)
                     conns[l.module] = conn
                     if _snapshot_generation(l.db)[0] != real:
                         why = "it changed while being opened, so nothing was read from it"
@@ -1327,6 +1345,14 @@ def _chain_search(query, limit, per_layer, mode, category_filter, type_filter, m
         return (f"[!] Search error: {e}\n\n"
                 "Hint: FTS5 has special syntax. Wrap problematic terms in double "
                 'quotes (e.g. "Kestrel\'s") or use prefix matching (Kestrel*).')
+    except Exception as e:
+        # The single-system path has the same arm: an embedding model that cannot load, or a sqlite3.DatabaseError
+        # that is not an OperationalError (a corrupt layer), must come back as a message, not a raw exception.
+        if guard.fired:
+            return (f"[!] Search aborted: query exceeded the {_QUERY_TIMEOUT_S:.0f}s timeout guard — likely a "
+                    f"pathological query, not a normal search. If this trips on legitimate use, raise "
+                    f"_QUERY_TIMEOUT_S in {Path(__file__).name}.")
+        return f"[!] Unexpected error: {e}"
     finally:
         for c in conns.values():
             c.close()

@@ -80,6 +80,10 @@ a whole document, one section of it, or one dataset record, read from the target
 # changed 2026-11-13: Codex 961 — containment at the open of a published generation: contained_real and
 #   open_contained (resolve with links and junctions followed, open the resolved file, re-check once open), used by
 #   check_publication and, through the server's _snapshot_generation, by every server-side module open.
+# changed 2026-11-14: audit batch 1 (Working_Documents/Chain_Search_Audit_Fable.md X1, N2) — a manifest that is not
+#   valid UTF-8 reads as unusable (None) instead of raising, declared_module decodes with replacement (its pattern is
+#   ASCII), load_system_cfg refuses a non-UTF-8 index.cfg as a SystemIndexError, and generation_uri opens every
+#   published generation immutable, so no -wal or -journal beside one is ever read.
 """
 
 import fnmatch
@@ -235,10 +239,13 @@ def _inside(path: Path, root: Path) -> bool:
 
 
 def _read_manifest(manifest_path: Path):
-    """The manifest's first fenced YAML block as a mapping, or None if the file, the block or the YAML is unusable."""
+    """The manifest's first fenced YAML block as a mapping, or None if the file, the block or the YAML is unusable.
+    A file that is not valid UTF-8 is unusable too: every caller (module discovery, the strict cfg load, a campaign
+    profile, an adaptation profile) already treats None as a loud refusal, and a raised UnicodeDecodeError instead
+    took down every chain call, because module discovery reads every manifest under Game_Systems."""
     try:
         text = manifest_path.read_text(encoding="utf-8")
-    except OSError:
+    except (OSError, UnicodeDecodeError):
         return None
     m = MANIFEST_FENCE.search(text)
     if not m:
@@ -301,6 +308,8 @@ def load_system_cfg(cfg_path) -> SystemCfg:
         cfg = load_cfg(cfg_path, strict=True)
     except (CfgError, FileNotFoundError) as e:
         raise SystemIndexError(f"{where}: {e}")
+    except UnicodeDecodeError as e:
+        raise SystemIndexError(f"{where} is not valid UTF-8 ({e}); save it as UTF-8")
 
     problems = []
     for section, body in cfg.items():
@@ -918,7 +927,7 @@ def check_publication(sdir: Path, module: str, entry: dict) -> tuple:
         return None, None, f"its database {path.name} is missing; rebuild it (build_indexes.py --system {module})"
     import sqlite3
     try:
-        conn, why = open_contained(path, sdir, lambda real: sqlite3.connect(f"{real.as_uri()}?mode=ro", uri=True))
+        conn, why = open_contained(path, sdir, lambda real: sqlite3.connect(generation_uri(real), uri=True))
         if conn is None:                    # containment enforced at the open itself
             return None, None, f"its database {why}"
         try:
@@ -962,9 +971,14 @@ def discover(root: Path, private_roots=()) -> list:
 
 
 def declared_module(cfg_path: Path):
-    """The module id an index.cfg declares, read without validating the rest (None if it declares none)."""
+    """The module id an index.cfg declares, read without validating the rest (None if it declares none).
+
+    Decoded with replacement: the `module =` line this looks for is ASCII by its own pattern, so a stray non-UTF-8
+    byte elsewhere in the file cannot change the answer. It used to raise instead, failing every builder lookup that
+    walks discovery (--system for any module, --all-systems, pruning, module discovery for chains). The strict
+    load_system_cfg still refuses that file when its own module is built."""
     try:
-        text = Path(cfg_path).read_text(encoding="utf-8")
+        text = Path(cfg_path).read_text(encoding="utf-8", errors="replace")
     except OSError:
         return None
     m = re.search(r"(?m)^\s*module\s*=\s*([A-Za-z0-9_]+)\s*(?:#.*)?$", text)
@@ -1211,6 +1225,18 @@ def resolve_db(sdir: Path, module: str, entry: dict) -> Path:
         raise SystemIndexError(f"registry entry for {module!r} names {name!r}, which is outside index/systems or "
                                f"not a generation of that module")
     return target
+
+
+def generation_uri(real: Path) -> str:
+    """The read-only URI every reader of a published generation opens it with, at the resolved path open_contained or
+    contained_real returned.
+
+    immutable=1 because a generation is never written once published: it is built under a temp name, renamed into
+    place, and from then on only read or collected. SQLite then reads the main file alone and never consults a -wal,
+    -shm or -journal beside it, so a sidecar planted at the generation's name (a link leading out of index/systems,
+    say) can never contribute rows: containment checks only the main file. Locking is skipped too, which a file that
+    nobody writes does not need. The corpus database, rebuilt in place under one name, is NOT opened this way."""
+    return f"{Path(real).as_uri()}?mode=ro&immutable=1"
 
 
 # Why open_contained refused a file that resolved inside sdir before the open but not to the same file after it.

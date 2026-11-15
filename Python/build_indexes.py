@@ -75,6 +75,8 @@ Replaces: build_directory_indexes.py + build_search_index.py
 # changed 2026-11-13: the embedding-cache seed's read-only ATTACH of the live generation is contained the same way
 #   (Codex 967): checked at the attach, the resolved path attached, re-checked before any query, detached unread on
 #   refusal. A refusal is reported in the build's errors and the build embeds every document afresh.
+# changed 2026-11-14: published generations are opened and attached immutable (system_index.generation_uri), so a
+#   sidecar file beside one is never read (audit batch 1, Working_Documents/Chain_Search_Audit_Fable.md N2).
 
 Usage:
     python build_indexes.py                   # reads indexer.cfg, writes all outputs
@@ -955,7 +957,7 @@ def _seed_embed_cache(conn, live_db, sdir: Path = None):
     if real is None:
         return why
     try:
-        conn.execute("ATTACH DATABASE ? AS live", (f"{real.as_uri()}?mode=ro",))
+        conn.execute("ATTACH DATABASE ? AS live", (system_index.generation_uri(real),))
     except sqlite3.Error:
         return None
     try:
@@ -1013,7 +1015,7 @@ def _section_json(address) -> str:
 
 def _open_published_ro(real: Path):
     """The read-only opener for system_index.open_contained: a published generation, at its resolved path."""
-    return sqlite3.connect(f"{Path(real).as_uri()}?mode=ro", uri=True)
+    return sqlite3.connect(system_index.generation_uri(real), uri=True)
 
 
 def check_relations(cfg: "system_index.SystemCfg", own_conn, dep_dbs: dict, sdir: Path) -> list:

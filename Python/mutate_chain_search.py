@@ -21,6 +21,8 @@ Command line arguments:
 # changed 2026-11-13: Codex 961 — system_index is a mutation target too; mutants for containment at the remaining
 #   module opens (_resolve_system, single-system search, check_publication); the two at-open rule mutants follow
 #   the rule into system_index.contained_real.
+# changed 2026-11-14: audit batch 1 — mutants for undecodable inputs, immutable generation opens, the connection
+#   closed when its extension fails, and the chain-path catch-all; two open mutants repointed at the new opens.
 """
 
 import io
@@ -107,9 +109,9 @@ MUTANTS = [
     ("search: an unreadable snapshot database not refused", "srv",
      '                    row, why = None, f"it can no longer be opened ({e})"', "                    raise"),
     ("search: switches to the registry's current generation", "srv",
-     '_open_readonly(load_vectors=mode != "fts", db_path=real)',
+     '_open_readonly(load_vectors=mode != "fts", db_path=real, generation=True)',
      '_open_readonly(load_vectors=mode != "fts", db_path=system_index.resolve_db('
-     'SYSTEMS_DIR, l.module, system_index.read_registry(SYSTEMS_DIR)["systems"][l.module]))'),
+     'SYSTEMS_DIR, l.module, system_index.read_registry(SYSTEMS_DIR)["systems"][l.module]), generation=True)'),
     # ---- Codex 957: containment at the open, declarations validated, canonical unit identity
     ("open: containment not checked at the open", "si", "    if not _inside(real, Path(sdir)):",   # 961: the rule
      "    " + OFF),                                                                        # moved to contained_real
@@ -173,8 +175,7 @@ MUTANTS = [
      '_open_module(db_path, system, load_vectors=needs_vectors, verb="search")',
      '_open_module(db_path, system, verb="search")'),
     ("publication: opened unchecked", "si",
-     '        conn, why = open_contained(path, sdir, lambda real: sqlite3.connect(f"{real.as_uri()}?mode=ro", '
-     'uri=True))',
+     '        conn, why = open_contained(path, sdir, lambda real: sqlite3.connect(generation_uri(real), uri=True))',
      '        conn, why = sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True), None'),
     ("publication: not re-checked once open", "si",
      "    if contained_real(path, sdir)[0] != real:\n        conn.close()",
@@ -237,6 +238,23 @@ MUTANTS = [
      "(system, system_index.SUPPORTED_DEPENDENCY_SCHEMAS)\n    if err:", "(system)\n    if err:"),
     ("system: single search reads schema 3", "srv", '    if row["schema_version"] not in schemas:',
      "    " + OFF),
+    # ---- audit batch 1 (Working_Documents/Chain_Search_Audit_Fable.md X1, C3, N2)
+    ("decode: an undecodable manifest raises", "si",
+     "    except (OSError, UnicodeDecodeError):\n        return None\n    m = MANIFEST_FENCE",
+     "    except OSError:\n        return None\n    m = MANIFEST_FENCE"),
+    ("decode: declared_module decodes strictly", "si", 'read_text(encoding="utf-8", errors="replace")',
+     'read_text(encoding="utf-8")'),
+    ("decode: an undecodable index.cfg not refused", "si",
+     '    except UnicodeDecodeError as e:\n        raise SystemIndexError(f"{where} is not valid UTF-8',
+     '    except ImportError as e:\n        raise SystemIndexError(f"{where} is not valid UTF-8'),
+    ("open: a generation opened without immutable", "si", '?mode=ro&immutable=1"', '?mode=ro"'),
+    ("open: a generation opened as the corpus is", "srv",
+     '    uri = system_index.generation_uri(path) if generation else', '    uri = f"{path.as_uri()}?mode=ro" if 1 else'),
+    ("open: a connection leaked when its extension fails", "srv",
+     "    except BaseException:\n        conn.close()\n        raise", "    except BaseException:\n        raise"),
+    ("search: no catch-all on the chain path", "srv",
+     '        return f"[!] Unexpected error: {e}"\n    finally:\n        for c in conns.values():',
+     '        raise\n    finally:\n        for c in conns.values():'),
 ]
 
 EQUIVALENT: dict = {

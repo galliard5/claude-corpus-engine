@@ -35,6 +35,28 @@ while it stays rare.
 
 ---
 
+## 2026-11-14
+
+### Fixed
+
+- **A file that is not valid UTF-8 no longer breaks chain search.** One such byte in any `Game_Systems` manifest
+  used to crash every `search_corpus(campaign=|chain=)` and `index_status(campaign=|chain=)` call with a traceback,
+  even when the file had nothing to do with the chain. The same went for an `index.cfg` in the builder's lookups
+  (`--system` for any module, `--all-systems`, pruning). Now an undecodable manifest or campaign profile refuses,
+  an undecodable adaptation profile makes retrieval non-authoritative, and an undecodable `index.cfg` fails only its
+  own module's build. In each case the message names the file as not valid UTF-8.
+- **Chain search reports an unexpected error instead of raising it**, as single-system search already did. An
+  embedding model that cannot load in `vector` or `hybrid` mode now returns `[!] Unexpected error: …`. A connection
+  whose vector extension fails to load is closed rather than leaked.
+- **Published module databases are opened immutable.** A generation is never written once it is published, so the
+  server and the builder now open each one with SQLite's `immutable=1`. SQLite then reads the main file alone and
+  never a `-wal` or `-journal` file beside it, which the containment check did not cover. The corpus database is
+  opened as before.
+
+These reach chat once the images are rebuilt (`docker compose up -d --build corpus-search index-tools` from
+`Python/`), since both servers and the builder they run are copied into the image. The tool surface is unchanged,
+so Claude Desktop needs no restart.
+
 ## 2026-11-13
 
 ### Added

@@ -35,6 +35,10 @@ decisions Codex 938, refinement A; approval Codex 955)
                produces, on the same synthetic corpus and modules.
   Containment  a chain search opens nothing outside the corpus: a junctioned module, a registry entry or generation
                file leading out, and a campaign reached through a link all refuse unread.
+  Robustness   a manifest, index.cfg or profile that is not valid UTF-8 refuses (its own module, campaign or
+               adaptation) and breaks nothing else; an exception from the embedding lane comes back as a message;
+               a connection whose vector extension fails to load is closed; a published generation is opened
+               immutable, so a -wal or -journal planted beside it is never read.
 
 Usage:
     python -m unittest test_chain_search -v
@@ -44,6 +48,8 @@ Command line arguments:
     --no-pause   Skip end-of-run pause
 
 # changed 2026-11-12: created (chain-aware search stage 3, Codex 955).
+# changed 2026-11-14: TestAuditRobustness — audit batch 1 (undecodable inputs, the chain search catch-all, the
+#   connection closed when its extension fails to load, published generations opened immutable).
 """
 
 import argparse
@@ -1026,10 +1032,11 @@ class TestContainment(ChainFixture):
         does not), and the lexical fallback on a database without a vector table still applies."""
         seen, real = [], srv._open_readonly
 
-        def spy(load_vectors=False, db_path=None):
+        def spy(load_vectors=False, db_path=None, generation=False):
             if db_path is not None and Path(db_path).name.startswith("basesys."):
                 seen.append(load_vectors)
-            return real(load_vectors=False, db_path=db_path)
+                self.assertTrue(generation)                         # a module database is opened immutable
+            return real(load_vectors=False, db_path=db_path, generation=generation)
         with mock.patch.object(srv.embedding, "AVAILABLE", True), \
                 mock.patch.object(srv, "_open_readonly", side_effect=spy):
             for mode, want in (("hybrid", True), ("vector", True), ("fts", False)):
@@ -1149,6 +1156,113 @@ class TestLegacyCompatibility(ChainFixture):
         finally:
             for n, v in saved.items():
                 setattr(srv, n, v)
+
+
+# ================================================================ robustness (audit batch 1)
+
+class TestAuditRobustness(ChainFixture):
+    """Inputs the 2026-11-14 audit (Working_Documents/Chain_Search_Audit_Fable.md, findings X1, C3 and N2) showed
+    crashing, leaking or being read where the design says they are refused or ignored."""
+
+    UNDECODABLE = b"# Other\n\n```yaml\nnote: caf\xe9\n```\n"         # Latin-1 e-acute: not valid UTF-8
+
+    def test_an_undecodable_manifest_outside_the_chain_breaks_nothing(self):
+        write(self.root / "Game_Systems" / "Other" / "other.md", "")
+        (self.root / "Game_Systems" / "Other" / "other.md").write_bytes(self.UNDECODABLE)
+        out = self.search(chain="basesys,hb")
+        self.assertEqual([m for _p, m in self.hits(out)], ["hb", "basesys", "basesys"])
+        self.assertIn("2. hb: indexed", self.status(chain="basesys,hb"))
+        known, ambiguous = si.known_modules(self.root, (PRIVATE,))
+        self.assertIn("basesys", known)
+        self.assertNotIn("other", known)
+
+    def test_an_undecodable_index_cfg_refuses_only_its_own_module(self):
+        other = self.root / "Game_Systems" / "Other"
+        write(other / "other.md", manifest("other", resolution="defined"))
+        write(other / "index.cfg", "")
+        (other / "index.cfg").write_bytes(b"[system]\nmodule = other\n# caf\xe9\n")
+        self.assertEqual(si.declared_module(other / "index.cfg"), "other")     # the ASCII module line still reads
+        with self.assertRaisesRegex(si.SystemIndexError, "not valid UTF-8"):
+            si.load_system_cfg(other / "index.cfg")
+        self.assertEqual(si.find_cfg(self.root, "basesys", (PRIVATE,)), self.base_cfg)
+        ordered, failures = bi._ordered_targets([other / "index.cfg", self.base_cfg])
+        self.assertEqual((ordered, failures), ([self.base_cfg], 1))
+        self.assertEqual([m for _p, m in self.hits(self.search(chain="basesys,hb"))], ["hb", "basesys", "basesys"])
+
+    def test_an_undecodable_campaign_profile_refuses(self):
+        (self.camp1 / rc.PROFILE_FILE).write_bytes(b"# P\n\n```yaml\nchain: [Baseline]\nnote: caf\xe9\n```\n")
+        self.assertTrue(any("not valid UTF-8" in r for r in self.resolve(campaign="Camp_One").refusals))
+        out = self.search(campaign="Camp_One")
+        self.assertIn("No search was run", out)
+        self.assertIn("not valid UTF-8", out)
+
+    def test_an_undecodable_adaptation_profile_is_non_authoritative(self):
+        self.adapt.write_bytes(self.UNDECODABLE)
+        out = self.status(campaign="Camp_One")
+        self.assertIn("not valid UTF-8", out)
+        self.assertIn("NON-AUTHORITATIVE", out)
+
+    def test_an_embedding_failure_is_reported_not_raised(self):
+        with mock.patch.object(srv, "_has_vector_table", return_value=True), \
+                mock.patch.object(srv.embedding, "AVAILABLE", True), mock.patch.object(srv.embedding, "load_vec"), \
+                mock.patch.object(srv.embedding, "embed_query", side_effect=RuntimeError("model unavailable")):
+            out = self.search(chain="basesys,hb", mode="vector")
+        self.assertEqual(out, "[!] Unexpected error: model unavailable")
+
+    def test_a_connection_whose_extension_fails_to_load_is_closed(self):
+        opened = []
+
+        def load_vec(conn):
+            opened.append(conn)
+            raise RuntimeError("no vector extension")
+        for kw in ({"chain": "basesys,hb"}, {"system": "basesys"}):
+            with self.subTest(**kw):
+                opened.clear()
+                with mock.patch.object(srv.embedding, "AVAILABLE", True), \
+                        mock.patch.object(srv.embedding, "load_vec", side_effect=load_vec):
+                    out = self.search(mode="vector", **kw)
+                self.assertIn("[!] Unexpected error: no vector extension", out)
+                self.assertTrue(opened)
+                for conn in opened:
+                    with self.assertRaises(sqlite3.ProgrammingError):          # closed, not leaked
+                        conn.execute("SELECT 1")
+
+    def test_a_sidecar_beside_a_generation_is_never_read(self):
+        # The generation is rewritten in WAL mode with its content unchanged, and a WAL holding one more table is
+        # planted at its name. Containment checks the main file only, so the sidecar must play no part in a read.
+        gen = self.gen("basesys")
+        work = Path(self._tmp.name) / "work.db"
+        work.write_bytes(gen.read_bytes())
+        conn = sqlite3.connect(work)
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchall()
+            gen.write_bytes(work.read_bytes())
+            conn.execute("CREATE TABLE planted (x)")
+            conn.commit()
+            Path(f"{gen}-wal").write_bytes(Path(f"{work}-wal").read_bytes())
+        finally:
+            conn.close()
+        plain = sqlite3.connect(f"{gen.as_uri()}?mode=ro", uri=True)
+        try:                                                    # the fixture is real: a plain open reads the WAL
+            self.assertEqual(plain.execute("SELECT count(*) FROM sqlite_master WHERE name='planted'").fetchone()[0], 1)
+        finally:
+            plain.close()
+        opened, refused = self.call(srv._open_module, db_path=gen, system="basesys")
+        self.assertIsNone(refused)
+        try:
+            self.assertEqual(opened.execute("SELECT count(*) FROM sqlite_master WHERE name='planted'").fetchone()[0],
+                             0)
+        finally:
+            opened.close()
+        sdir = si.systems_dir(self.index)
+        held, why = si.open_contained(gen, sdir, lambda real: sqlite3.connect(si.generation_uri(real), uri=True))
+        self.assertIsNone(why)
+        try:
+            self.assertEqual(held.execute("SELECT count(*) FROM sqlite_master WHERE name='planted'").fetchone()[0], 0)
+        finally:
+            held.close()
+        self.assertEqual([m for _p, m in self.hits(self.search(chain="basesys,hb"))], ["hb", "basesys", "basesys"])
 
 
 def main():

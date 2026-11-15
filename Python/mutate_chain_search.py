@@ -25,6 +25,8 @@ Command line arguments:
 #   closed when its extension fails, and the chain-path catch-all; two open mutants repointed at the new opens.
 # changed 2026-11-15: audit batch 3 — mutants for the chain-order warning, layer tables checked at resolution (and
 #   only through the contained open), and the resolution header on both post-resolution refusals.
+# changed 2026-11-15: six mutants for audit batch 4 (C2): the word fallback for a vector query on a layer with no
+#   vector table: off, unguarded, applied to hybrid, unquoted, keeping one-letter words, and repeating words.
 """
 
 import io
@@ -195,7 +197,7 @@ MUTANTS = [
      "            if True:\n                declarations +="),
     ("search: no per-layer vector fallback", "srv",
      '            if lane_mode != "fts" and not _has_vector_table(conn):', "            " + OFF),
-    ("search: no look-ahead for 'more matched'", "srv", "*filters, per_layer + 1)[0]", "*filters, per_layer)[0]"),
+    ("search: no look-ahead for 'more matched'", "srv", "*lane_filters, per_layer + 1)[0]", "*lane_filters, per_layer)[0]"),
     ("search: refinement A not refused", "srv",
      '        if slots is None:\n            return "\\n".join([f"No results were returned',
      '        if False:\n            return "\\n".join([f"No results were returned'),
@@ -244,8 +246,9 @@ MUTANTS = [
     ("decode: an undecodable manifest raises", "si",
      "    except (OSError, UnicodeDecodeError):\n        return None\n    m = MANIFEST_FENCE",
      "    except OSError:\n        return None\n    m = MANIFEST_FENCE"),
-    ("decode: declared_module decodes strictly", "si", 'read_text(encoding="utf-8", errors="replace")',
-     'read_text(encoding="utf-8")'),
+    ("decode: declared_module decodes strictly", "si",
+     '        text = Path(cfg_path).read_text(encoding="utf-8", errors="replace")',
+     '        text = Path(cfg_path).read_text(encoding="utf-8")'),
     ("decode: an undecodable index.cfg not refused", "si",
      '    except UnicodeDecodeError as e:\n        raise SystemIndexError(f"{where} is not valid UTF-8',
      '    except ImportError as e:\n        raise SystemIndexError(f"{where} is not valid UTF-8'),
@@ -276,6 +279,25 @@ MUTANTS = [
     ("search: no catch-all on the chain path", "srv",
      '        return f"[!] Unexpected error: {e}"\n    finally:\n        for c in conns.values():',
      '        raise\n    finally:\n        for c in conns.values():'),
+    # ---- audit batch 4 (C2): a vector query on a layer with no vector table
+    ('fallback: the layer given the query as written', 'srv',
+     '                    lane_filters = _filters(words, category_filter, type_filter, missing_filter, reps)',
+     '                    pass'),
+    ('fallback: a query with no words searched anyway', 'srv',
+     '                    if not words:',
+     '                    if False:'),
+    ('fallback: hybrid rewritten too', 'srv',
+     '                if mode == "vector":',
+     '                if True:'),
+    ('fallback: words unquoted', 'srv',
+     '    return " OR ".join(f\'"{w}"\' for w in words)',
+     '    return " OR ".join(words)'),
+    ('fallback: one-letter words kept', 'srv',
+     'for w in re.findall(r"\\w+", query or "") if len(w) > 1)',
+     'for w in re.findall(r"\\w+", query or "") if len(w) > 0)'),
+    ('fallback: words repeated', 'srv',
+     '    words = dict.fromkeys(w.casefold() for w in',
+     '    words = list(w.casefold() for w in'),
 ]
 
 EQUIVALENT: dict = {

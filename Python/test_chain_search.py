@@ -55,6 +55,8 @@ Command line arguments:
 #   connection closed when its extension fails to load, published generations opened immutable).
 # changed 2026-11-15: TestStatusAgreesWithSearch — audit batch 3; the two broken-layer-table tests follow the refusal
 #   to resolution (and now check index_status too); the post-resolution refusal test checks for the header.
+# changed 2026-11-15: audit batch 4 (C2) — five tests in TestGrouping for the word fallback of a vector query on a
+#   layer with no vector table; the degrade test expects the new coverage note.
 """
 
 import argparse
@@ -236,8 +238,46 @@ class TestGrouping(ChainFixture):
         self.assertIn("vector lane unavailable (deps not installed) - using fts", out)
         with mock.patch.object(srv.embedding, "AVAILABLE", True), mock.patch.object(srv.embedding, "load_vec"):
             out = self.search(chain="basesys,hb", mode="vector")
-        self.assertIn("    hb: 1 hit(s) shown (no vector table - fts)", out)
-        self.assertIn("(no vector table - fts)", out.split("    basesys:")[1].splitlines()[0])
+        self.assertIn("    hb: 1 hit(s) shown (no vector table - fts on any of the query's words)", out)
+        self.assertIn("(no vector table - fts on any of the query's words)",
+                      out.split("    basesys:")[1].splitlines()[0])
+
+    def vector(self, query, **kw):
+        with mock.patch.object(srv.embedding, "AVAILABLE", True), mock.patch.object(srv.embedding, "load_vec"):
+            return self.search(query, chain="basesys,hb", mode="vector", **kw)
+
+    def test_a_natural_language_vector_query_on_a_fallback_layer(self):
+        """Audit C2: an apostrophe aborted the whole chain search with an fts5 syntax error, and plain text was an
+        implicit AND that matched nothing; the fallback layer now matches any of the query's words."""
+        out = self.vector("what's the cost of a forced march?")
+        self.assertNotIn("[!]", out.split("Rules chain status")[0] + out.split("Searched")[1])
+        self.assertIn("    hb: 1 hit(s) shown (no vector table - fts on any of the query's words)", out)
+        self.assertIn("1. notes/house.md  [hb rank 1]", out)
+        out = self.vector("march zzzunmatched")                          # not every word need match
+        self.assertIn("    hb: 1 hit(s) shown", out)
+
+    def test_a_query_with_no_words_searches_nothing_and_says_so(self):
+        out = self.vector("?! ' -")
+        self.assertIn("    hb: 0 hit(s) shown (no vector table, and the query has no words to match lexically)", out)
+        self.assertNotIn("fts5", out)
+
+    def test_hybrid_keeps_the_callers_lexical_query(self):
+        with mock.patch.object(srv.embedding, "AVAILABLE", True), mock.patch.object(srv.embedding, "load_vec"):
+            out = self.search("march zzzunmatched", chain="basesys,hb", mode="hybrid")
+        self.assertIn("(no vector table - fts)", out)
+        self.assertNotIn("any of the query's words", out)
+        self.assertIn("    hb: 0 hit(s) shown (no vector table - fts)", out)   # FTS syntax as written: implicit AND
+
+    def test_the_fallback_words_filters_still_apply(self):
+        out = self.vector("rope fatigue", representation_filter="verbatim")
+        self.assertIn("    basesys: 1 hit(s) shown (no vector table - fts on any of the query's words)", out)
+        self.assertIn("rules/core.md  [basesys rank 1]", out)
+        self.assertNotIn("rec:items/item/rope", out)                    # the dataset record is filtered out
+
+    def test_query_words(self):
+        self.assertEqual(srv._query_words("What's the cost of a forced march? March!"),
+                         '"what" OR "the" OR "cost" OR "of" OR "forced" OR "march"')
+        self.assertEqual(srv._query_words(" ' ?"), "")
 
     def test_sections_and_records_point_at_the_right_fetch(self):
         big = "# Big\n\n" + "".join(f"## Part {i}\n\n" + ("fatigue words here. " * 60) + "\n\n" for i in range(12))

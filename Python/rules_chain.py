@@ -54,7 +54,8 @@ included), and must still resolve inside the corpus once links and junctions are
 through a link that leads outside the corpus refuses, and so does an unsafe sidecar; an unsafe adaptation input makes
 retrieval non-authoritative. Module discovery is contained the same way (system_index.known_modules), and an indexed
 layer's index.cfg is read from the folder discovery validated, never by re-running the builder's discovery. Nothing
-outside the corpus is ever opened.
+reached through a link or junction leading out of the corpus is opened. These reads check and then read; a link
+swapped in between the two is out of scope (audit N5; Search_Server.md, *What containment does not cover*).
 
 REGISTRY SHAPE. Every registry entry is checked before any of it is used: a mapping, with a build_id, db and
 source_fingerprint string and an integer schema_version, and a layer (if any) that is a mapping whose depends_on maps
@@ -98,6 +99,9 @@ Command line arguments: none (library module).
 # changed 2026-11-15: audit batch 3 — resolve checks a schema-3 layer's relation tables (_layer_tables_problem, via
 #   the contained, immutable open), so index_status refuses exactly as chain search does; and it warns when the chain
 #   lists a layer below a layer it extends or relates to, as published (_order_warnings, audit C1).
+# changed 2026-11-15: audit batch 4 — the registry is read with the corpus root, so a systems directory leading
+#   out of the corpus refuses (N1); find_campaign matches and lists only profiles that resolve inside the corpus
+#   (N4); _key casefolds, so host and container agree (C4); the PATH SAFETY promise says what it covers (N5).
 """
 
 import hashlib
@@ -192,8 +196,14 @@ def _within(root: Path, path: Path) -> bool:
 
 
 def _key(path: Path) -> str:
-    """One spelling per file, for comparing resolved paths."""
-    return os.path.normcase(str(Path(path).resolve()))
+    """One spelling per file, for comparing resolved paths.
+
+    Casefolded on every platform (audit C4, 2026-11-15). os.path.normcase folds case on Windows only, and on Linux
+    resolve() keeps a path's case as written; so in the container a built_against or homebrew path whose case
+    differed from the file's matched on the host and was reported "does not pin" in the container, over the same
+    NTFS corpus. The corpus lives on a case-insensitive filesystem, where two names differing only in case are one
+    file, so folding is exact there."""
+    return os.path.normcase(str(Path(path).resolve())).casefold()
 
 
 def _sha(path: Path) -> str:
@@ -216,13 +226,16 @@ def find_campaign(root: Path, name: str) -> tuple:
     """(profile path, None), or (None, why): the one profile whose campaign folder is `name`, case-insensitively. A
     profile that resolves outside the corpus (through a link or junction) refuses, and is never read."""
     want = name.strip().casefold()
-    every = campaign_profiles(root)
+    # Only profiles that resolve inside the corpus are matched or listed (audit N4, 2026-11-15): the glob walks
+    # through links and junctions, so an unknown-campaign error used to list folder names found outside the corpus.
+    found = campaign_profiles(root)
+    every = [p for p in found if _within(root, p)]
     hits = [p for p in every if p.parent.name.casefold() == want]
     if len(hits) == 1:
-        if not _within(root, hits[0]):
-            return None, (f"{_rel(root, hits[0])} resolves outside the corpus (through a link or junction); it is "
-                          f"not read")
         return hits[0], None
+    if not hits and any(p.parent.name.casefold() == want for p in found):
+        return None, (f"the {PROFILE_FILE} of campaign {name!r} resolves outside the corpus (through a link or "
+                      f"junction); it is not read")
     if not hits:
         names = sorted({p.parent.name for p in every}, key=str.lower)
         return None, (f"no campaign folder named {name!r} holds a {PROFILE_FILE} (campaigns with one: "
@@ -520,7 +533,7 @@ def resolve(root: Path, index_dir: Path, rules_cfg: dict, *, campaign: str = Non
 
     known, ambiguous = system_index.known_modules(root, private_roots)
     try:
-        reg = system_index.read_registry(system_index.systems_dir(index_dir))      # the ONE snapshot
+        reg = system_index.read_registry(system_index.systems_dir(index_dir), root)      # the ONE snapshot
     except system_index.SystemIndexError as e:
         res.refusals.append(f"the module registry cannot be read: {e}")
         return res

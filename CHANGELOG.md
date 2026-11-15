@@ -49,9 +49,45 @@ while it stays rare.
 - **Every chain-search refusal carries the resolution header.** Two refusals that can only arise after resolution,
   a layer database that changed meanwhile and layer tables that broke meanwhile, printed a single line. They now
   carry the full header, as the reference documents.
+- **A vector chain search no longer fails on a layer without vectors.** A layer built with `--no-vectors` falls
+  back to full-text search, and it used to receive the natural-language query as FTS syntax. An apostrophe aborted
+  the whole search with an `fts5: syntax error`, and plain text matched only documents containing every word. That
+  layer is now searched for any of the query's words, and its coverage line says so. Hybrid mode is unchanged,
+  since its query is already written for the lexical lane.
+- **A build killed inside the registry lock no longer blocks the next one for ten minutes.** The lock now records
+  its owner, and a waiter breaks it at once when that process is gone from this machine. A lock from another
+  machine or container is still broken by age, after 90 seconds rather than 600. Breaking a lock can no longer
+  remove one that another build took in the meantime, and a build removes only its own lock.
+- **A Windows sharing violation no longer fails a publish.** When a reader, an editor or a scanner briefly holds
+  `registry.json` or the lock file open, the build retries for up to two seconds instead of failing with
+  "nothing published".
+- **A killed build's temp files are collected.** A build's `.<module>.<build>.tmp.db`, and a registry write's temp
+  file, used to stay behind for ever when the build was killed. Collection now removes them once they are six
+  hours old.
 
-Server-side, so it reaches chat once the image is rebuilt (`docker compose up -d --build corpus-search` from
-`Python/`). The tool surface is unchanged.
+### Changed
+
+- **A layer can extend a module loaded by declaration.** A layer with `extends: baseline`, where `baseline` is
+  listed under `indexer.cfg` `[rules_layers] not_searched` and has no `index.cfg`, used to fail with "build it
+  first", which could never succeed. It now builds; the registry records the parent as `extends`, not as a built
+  dependency. A relation that targets a section inside such a module is still refused, because there is no database
+  to check its address against.
+- **Module databases are trusted only inside the corpus.** If `index/systems` (or `index/`) is a junction or link to
+  a folder outside the corpus, every module search, fetch, status, chain resolution, build and prune now refuses.
+  Before, the outside folder became the anchor for every containment check, and collection could delete files
+  there. A `registry.json` that is a link leading out of `index/systems` is refused too. An index directory set
+  outside the corpus on purpose, as an absolute `[paths] index_directory`, is still accepted. If you moved
+  `index/` with a junction, set that path instead.
+- **Campaign lookup ignores profiles reached through a link out of the corpus.** An unknown-campaign error no longer
+  lists folder names found outside it, and such a profile no longer makes a campaign name ambiguous.
+- **Path comparisons ignore case on every platform.** An adaptation profile's `built_against` and `homebrew` paths
+  are matched case-insensitively in the container too, as they already were on Windows, so the two no longer
+  disagree about whether a profile is current.
+
+The search fixes are server-side and reach chat once the image is rebuilt (`docker compose up -d --build
+corpus-search` from `Python/`). The builder fixes (the lock, the temp files, the loaded parent, the anchored index)
+also reach `rebuild_indexes` from chat only after `docker compose up -d --build index-tools`; a build run on the host
+picks them up at once. The tool surface is unchanged.
 
 ## 2026-11-14
 

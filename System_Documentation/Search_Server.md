@@ -272,6 +272,26 @@ written once published, and SQLite then reads the main file alone, never a `-wal
 sidecar planted at a generation's name cannot contribute rows. The corpus database is rebuilt in place under one
 name, so it is opened read-only but not immutable.
 
+**The anchor is the corpus.** "Inside `index/systems/`" would mean nothing if `index/systems/` (or `index/`) were
+itself a junction to a folder outside the corpus: that folder would become the anchor, its databases would pass
+every check, and collection would delete files there. So `system_index.read_registry`, given the corpus root,
+first requires a systems directory that lies inside the corpus as written to resolve inside it too
+(`systems_dir_problem`), and every module read, chain resolution, build and prune passes the root. A
+`registry.json` that is a link leading out of `index/systems/` is refused as well. An index directory configured
+outside the corpus on purpose, as an absolute `[paths] index_directory`, is the operator's choice and is accepted;
+the server always uses `<corpus>/index/systems`.
+
+**What containment does not cover.** Containment is a check against links and junctions already in place, which
+is what this workstation's threat model needs: accidents, not an attacker racing the server (audit N3, N5). Out of
+scope, stated rather than half-fixed:
+- *A swap and swap back between the two checks.* The re-check resolves the name again rather than inspecting the
+  file the connection opened, so a file swapped out and back within microseconds passes.
+- *Hard links.* A hard link to an outside file is an ordinary file to every check.
+- *Profile, sidecar and config reads* check containment and then read, as two steps, without the re-check the
+  database opens have.
+- *The fixed paths* `indexer.cfg` and `index/search_index.db` are the operator's configuration and are not
+  containment-checked.
+
 **Why one database per module, not per campaign.** A campaign may run several module layers (a system and a setting
 built on it). One database per campaign would put layers that override one another into one FTS table, ranked by
 relevance with nothing saying which governs. Per-module databases avoid that, and chain-aware search (next section)
@@ -329,8 +349,12 @@ database, with its own ranking, most specific first. One timeout guard covers th
   of layers with hits, the search refuses and names the smallest limit that would work.
 - **No cross-layer scores.** Scores from different databases are not comparable, so none are shown; each hit
   carries its rank within its layer.
-- **Vector fallback is per layer.** A layer without a vector table falls back to FTS, and the header says so for
-  that layer.
+- **Vector fallback is per layer.** A layer without a vector table falls back to FTS, and its coverage line says
+  so. In `vector` mode the query is natural language, not FTS syntax, so the fallback layer is searched for any of
+  its words (`_query_words`: each word of two characters or more, quoted, joined with `OR`). Passed through as
+  written, an apostrophe used to abort the whole search with an FTS syntax error, and plain text matched only
+  documents holding every word. A query with no such word searches that layer for nothing and says so. In `hybrid`
+  mode the caller's query is already the lexical lane's, so it is used as written.
 - **Relations are reported as declared, never inferred.** Each hit lists the declarations the chain's layers make
   about it, with each declaration's status and whether its target has changed since it was pinned. Declarations
   whose target lies outside the chain are counted, not listed. A hit nothing names says "no override recorded",
@@ -416,7 +440,9 @@ Each result includes:
 - `missing_filter` is whitelisted server-side against `{"name", "keywords", "description", "type"}`. Any other value is rejected before touching SQL.
 - **`system` is a name, never a path.** It must match `^[a-z0-9_]+$` and resolves only through
   `index/systems/registry.json`; the registry's database name must be a generation of that module inside
-  `index/systems/`, or it is refused. `representation_filter` is whitelisted against the three representations.
+  `index/systems/`, or it is refused. `index/systems/` must itself resolve inside the corpus, and the registry must
+  not be a link leading out of it (see *The anchor is the corpus*). `representation_filter` is whitelisted against
+  the three representations.
 - **One new file read, stated plainly:** `index_status(system=...)` recomputes the module's source fingerprint, which
   reads the module's `index.cfg` and the files it declares — all inside the read-only corpus mount. The config is
   found by searching `Game_Systems/*/index.cfg` for the module id and confined to that tree; **the registry's
@@ -425,9 +451,10 @@ Each result includes:
 - **Chain resolution reads more, all inside the corpus.** It reads `indexer.cfg`'s `[rules_layers]` section, the
   manifests under `Game_Systems/` and the private roots (to know the modules), the named campaign's
   `Campaign_Profile.md`, its adaptation profile, and its declared sidecars (hashed, never searched). A profile or
-  declared path that resolves outside the corpus, through `..`, an absolute path or a link, is refused unread. A
-  file that is not valid UTF-8 is refused, not raised. Nothing else in this server reads outside the index databases
-  and the build history.
+  declared path that resolves outside the corpus, through `..`, an absolute path or a link, is refused unread, and a
+  campaign profile reached through a link out of the corpus is neither matched nor listed. A file that is not valid
+  UTF-8 is refused, not raised. These reads check and then read; *What containment does not cover* says what that
+  leaves open. Nothing else in this server reads outside the index databases and the build history.
 - Hybrid search restricted to dataset records goes straight to the lexical lane without embedding the query, so a
   broken model cannot defeat a result that never needed it.
 - `mode` is whitelisted against `{"fts", "vector", "hybrid"}`. The sqlite-vec extension is loaded only when a vector/hybrid query needs it, with `enable_load_extension` toggled back off immediately after the load. Embedding runs in-process (local model, no network at query time); the vector lane adds no new external surface.

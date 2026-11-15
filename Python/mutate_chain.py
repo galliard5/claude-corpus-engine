@@ -21,6 +21,9 @@ Command line arguments:
 # changed 2026-11-12: Codex 951 — mutants for the builder's discovery and the shared loader's containment.
 # changed 2026-11-12: stage 3 (Codex 955) — the unreadable-config mutant repointed: the line moved, unchanged in
 #   effect, into search_mcp_server._resolve_chain, which the chain status and the chain search share.
+# changed 2026-11-15: four mutants for audit batch 4: the systems directory anchored to the corpus in resolution
+#   and the server (N1), an outside campaign called unknown (N4), and path keys casefolded (C4). The
+#   campaign-containment and ambiguity mutants follow find_campaign's new filter.
 """
 
 import io
@@ -50,7 +53,7 @@ MUTANTS = [
      "    hits = [p for p in every if p.parent.name.casefold() == want]",
      "    hits = [p for p in every if p.parent.name == name.strip()]"),
     ("campaign: an ambiguous name takes the first", "rc",
-     "    if len(hits) == 1:\n        if not _within(root, hits[0]):", "    if hits:\n        if not _within(root, hits[0]):"),
+     "    if len(hits) == 1:\n        return hits[0], None", "    if hits:\n        return hits[0], None"),
     ("campaign: the direct layout ignored", "rc",
      '        found.update(p for p in base.glob(f"*/*/{PROFILE_FILE}") if p.parent.name.lower() != "scenarios")',
      "        pass"),
@@ -151,7 +154,8 @@ MUTANTS = [
     ("paths: a sidecar's containment not checked", "rc",
      '        if not _within(root, path):\n            res.refusals.append(f"sidecar {s.path} resolves outside',
      '        if False:\n            res.refusals.append(f"sidecar {s.path} resolves outside'),
-    ("paths: a campaign's containment not checked", "rc", "        if not _within(root, hits[0]):", "        if False:"),
+    ("paths: a campaign's containment not checked", "rc",
+     "    every = [p for p in found if _within(root, p)]", "    every = found"),
     ("paths: an unsafe adaptation homebrew accepted", "rc",
      "        target = target_of(str(item)) if isinstance(item, str) else None",
      "        target = (Path(root) / str(item)) if isinstance(item, str) else None"),
@@ -240,6 +244,19 @@ MUTANTS = [
      '    if False:\n        lines += [f"[!] Chain refused'),
     ("server: non-authoritative shown as current", "srv",
      '"[!] NON-AUTHORITATIVE — the chain\'s adaptation inputs are not current"', '"adaptation inputs current"'),
+    # ---- audit batch 4 (N1, N4, C4)
+    ('anchor: resolution does not anchor the systems dir', 'rc',
+     'read_registry(system_index.systems_dir(index_dir), root)',
+     'read_registry(system_index.systems_dir(index_dir))'),
+    ('anchor: the server does not anchor the systems dir', 'srv',
+     '        reg = system_index.read_registry(SYSTEMS_DIR, _CORPUS_ROOT)',
+     '        reg = system_index.read_registry(SYSTEMS_DIR)'),
+    ('campaigns: an outside campaign called unknown', 'rc',
+     '    if not hits and any(p.parent.name.casefold() == want for p in found):',
+     '    if False:'),
+    ('keys: case not folded', 'rc',
+     '    return os.path.normcase(str(Path(path).resolve())).casefold()',
+     '    return os.path.normcase(str(Path(path).resolve()))'),
 ]
 
 EQUIVALENT: dict = {}

@@ -84,6 +84,11 @@ a whole document, one section of it, or one dataset record, read from the target
 #   valid UTF-8 reads as unusable (None) instead of raising, declared_module decodes with replacement (its pattern is
 #   ASCII), load_system_cfg refuses a non-UTF-8 index.cfg as a SystemIndexError, and generation_uri opens every
 #   published generation immutable, so no -wal or -journal beside one is ever read.
+# changed 2026-11-15: audit batch 4 — the registry lock records a token, pid and host: a dead owner on this host is
+#   broken at once, any other after LOCK_STALE_S (now 90 s), breaking renames aside and checks first, and release
+#   removes only our own lock (B3, B7); sharing violations are retried for SHARING_RETRY_S (B6); collect_garbage
+#   sweeps temp files older than TEMP_STALE_S (B3); read_registry(sdir, root) refuses a systems directory leading
+#   out of the corpus and a registry.json that is a link leading out (systems_dir_problem, N1).
 """
 
 import fnmatch
@@ -92,6 +97,7 @@ import json
 import os
 import re
 import secrets
+import socket
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -134,7 +140,19 @@ SYSTEMS_SUBDIR = "systems"
 REGISTRY = "registry.json"
 LOCK = "registry.lock"
 LOCK_TIMEOUT_S = 120
-LOCK_STALE_S = 600
+# A lock whose owner cannot be shown dead (another host or container, or a lock in the old "pid time" format) is
+# presumed abandoned once this old. Every hold is a publish or a prune, which take seconds, so 90 s is far above any
+# real hold and below LOCK_TIMEOUT_S, so one waiting build recovers by itself (audit B3).
+LOCK_STALE_S = 90
+# How long a Windows sharing violation (PermissionError: a reader, editor or scanner holding the file) is retried
+# before it counts as a real failure (audit B6). Short, so a directory that really is unwritable fails fast.
+SHARING_RETRY_S = 2.0
+# A build's temp database (temp_path) left by a killed build is swept once this old. A live build writes its temp
+# file as it goes and runs for minutes, so six hours can only be a leftover; on Windows a temp file still open
+# cannot be deleted anyway (audit B3).
+TEMP_STALE_S = 6 * 3600
+TEMP_DB = re.compile(r"^\.(?P<module>[a-z0-9_]+)\.(?P<build>[A-Za-z0-9_-]+)\.tmp\.db(?:-journal|-wal|-shm)?$")
+TEMP_REGISTRY = re.compile(r"^\.registry\.json\.\d+\.tmp$")
 MANIFEST_FENCE = re.compile(r"(?ms)^```ya?ml[ \t]*\n(.*?)^```[ \t]*$")
 # Keys shown first in a record's search text, in this order; every other key follows in sorted order.
 LEAD_KEYS = ("name", "kind", "category", "id")
@@ -1158,12 +1176,45 @@ def new_build_id() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + secrets.token_hex(3)
 
 
-def read_registry(sdir: Path) -> dict:
+def systems_dir_problem(sdir: Path, root: Path):
+    """Why the systems directory cannot anchor containment, or None (audit N1, 2026-11-15).
+
+    Every containment check on a module database asks whether it resolves inside index/systems, and index/systems
+    is itself resolved first. So when index/systems (or index/) was a junction to a folder outside the corpus, the
+    outside folder WAS the anchor: its databases passed every check, and collect_garbage would delete unreferenced
+    generations there. A systems directory that lies inside the corpus as written must therefore resolve inside it
+    too. One configured outside the corpus ([paths] index_directory given as an absolute path) is the operator's
+    explicit choice and is not second-guessed; the search server always uses <corpus>/index/systems."""
+    as_written, corpus = Path(os.path.abspath(sdir)), Path(os.path.abspath(root))
+    try:
+        as_written.relative_to(corpus)
+    except ValueError:
+        return None
+    if not _inside(Path(sdir), Path(root)):
+        return (f"{as_written} resolves outside the corpus (through a link or junction), so no module database "
+                f"under it is trusted; make it a plain folder inside the corpus")
+    return None
+
+
+def read_registry(sdir: Path, root: Path = None) -> dict:
     """The registry, or an empty one if none exists yet. A registry that exists but cannot be read is an error:
-    overwriting it would silently unpublish every module."""
+    overwriting it would silently unpublish every module.
+
+    With `root` (the corpus), a systems directory that leads out of the corpus refuses first (systems_dir_problem).
+    A registry.json that is itself a link resolving outside the systems directory always refuses (audit N1): it was
+    read unchecked, so an outside file could name the generations to serve."""
+    if root is not None:
+        why = systems_dir_problem(sdir, root)
+        if why:
+            raise SystemIndexError(why)
     path = Path(sdir) / REGISTRY
     if not path.exists():
+        if path.is_symlink():
+            raise SystemIndexError(f"{path} is a link to nothing; remove it")
         return {"schema_version": SCHEMA_VERSION, "systems": {}}
+    if not _inside(path, Path(sdir)):
+        raise SystemIndexError(f"{path} resolves outside {Path(sdir).name}/ (through a link), so it is not read; "
+                               f"replace it with the real file")
     try:
         reg = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as e:
@@ -1179,39 +1230,150 @@ def write_registry(sdir: Path, reg: dict) -> None:
     tmp = Path(sdir) / f".{REGISTRY}.{os.getpid()}.tmp"
     try:
         tmp.write_text(json.dumps(reg, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-        os.replace(tmp, path)
+        _replace_retrying(tmp, path)
     finally:
         if tmp.exists():
             tmp.unlink()
 
 
+def _replace_retrying(src: Path, dst: Path) -> None:
+    """os.replace, retrying a Windows sharing violation for up to SHARING_RETRY_S (audit B6). While anything holds
+    registry.json open (another builder's unlocked read_registry, an editor, a scanner), the replace raises
+    PermissionError; that failed safely but needlessly. A violation that outlasts the retry is raised."""
+    deadline = time.monotonic() + SHARING_RETRY_S
+    while True:
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError:
+            if time.monotonic() > deadline:
+                raise
+            time.sleep(0.05)
+
+
+def _pid_alive(pid: int):
+    """True when a process with this id exists on this host, False when none does, None when it cannot be told.
+    Never os.kill(pid, 0) on Windows: signal 0 is CTRL_C_EVENT there and would interrupt the process."""
+    if pid <= 0:
+        return None
+    if os.name == "nt":
+        try:
+            import ctypes
+            k32 = ctypes.windll.kernel32
+            handle = k32.OpenProcess(0x1000, False, pid)             # PROCESS_QUERY_LIMITED_INFORMATION
+            if not handle:
+                return {87: False, 5: True}.get(k32.GetLastError())  # invalid parameter: no such process
+            try:
+                code = ctypes.c_ulong()
+                if not k32.GetExitCodeProcess(handle, ctypes.byref(code)):
+                    return None
+                return code.value == 259                             # STILL_ACTIVE
+            finally:
+                k32.CloseHandle(handle)
+        except (AttributeError, OSError):
+            return None
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return None
+    return True
+
+
+def _lock_owner_dead(text: str) -> bool:
+    """True only when the lock's text names this host and a process id that no longer exists. The old "pid time"
+    format, another host (the container and the Windows host are different hosts with different pid spaces), our own
+    pid, or anything unreadable answers False, leaving the decision to the age test."""
+    parts = (text or "").split()
+    if len(parts) < 4 or not parts[1].isdigit():
+        return False
+    pid, host = int(parts[1]), parts[2]
+    if host != socket.gethostname() or pid == os.getpid():
+        return False
+    return _pid_alive(pid) is False
+
+
+def _break_lock(path: Path, judged: str) -> None:
+    """Remove a lock judged abandoned from its text `judged`, without removing one taken since (audit B7).
+
+    Two waiters could both judge a lock stale; the first broke it and acquired, and the second then unlinked the
+    FRESH lock on the strength of its earlier look. So the lock is renamed aside first (only one rename of a given
+    file can succeed), and the file moved is checked: if it is not the lock that was judged, it is put back unless
+    a newer lock has already taken the name. Renaming back cannot overwrite: Windows refuses a rename onto an
+    existing name, and elsewhere a hard link is used, which refuses too."""
+    aside = path.with_name(f"{path.name}.{secrets.token_hex(6)}.broken")
+    try:
+        os.rename(path, aside)
+    except OSError:
+        return                                  # gone already, or not ours to move: the caller simply retries
+    try:
+        moved = aside.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        moved = None
+    if moved != judged:
+        try:
+            if os.name == "nt":
+                os.rename(aside, path)
+                return
+            os.link(aside, path)
+        except OSError:
+            pass
+    try:
+        aside.unlink()
+    except OSError:
+        pass
+
+
 @contextmanager
 def registry_lock(sdir: Path):
-    """Serialise registry read-modify-write across processes with an exclusive lock file. A lock older than
-    LOCK_STALE_S is presumed abandoned by a crashed build and broken."""
+    """Serialise registry read-modify-write across processes with an exclusive lock file.
+
+    The lock holds a token, the pid and the host of its owner (audit B3, B7, 2026-11-15). A waiter breaks it as soon
+    as its owner is provably dead (same host, pid gone: a build killed inside the lock, say by index-tools' timeout),
+    and otherwise once it is LOCK_STALE_S old; breaking goes through _break_lock, so a lock taken in the meantime
+    survives. Release removes the lock only while it still holds our own token, so a holder whose lock was broken
+    never removes its successor's. A Windows sharing violation on the create is retried like contention, but only
+    for SHARING_RETRY_S at a stretch, so an unwritable directory still fails fast (audit B6)."""
     path = Path(sdir) / LOCK
+    mine = f"{secrets.token_hex(8)} {os.getpid()} {socket.gethostname()} {time.time():.0f}\n"
     deadline = time.monotonic() + LOCK_TIMEOUT_S
+    denied_since = None
     while True:
         try:
             fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-            os.write(fd, f"{os.getpid()} {time.time():.0f}\n".encode())
-            os.close(fd)
+            try:
+                os.write(fd, mine.encode("utf-8"))
+            finally:
+                os.close(fd)
             break
         except FileExistsError:
+            denied_since = None
             try:
-                if time.time() - path.stat().st_mtime > LOCK_STALE_S:
-                    path.unlink()
-                    continue
+                judged = path.read_text(encoding="utf-8", errors="replace")
+                if _lock_owner_dead(judged) or time.time() - path.stat().st_mtime > LOCK_STALE_S:
+                    _break_lock(path, judged)
+                    if not path.exists():
+                        continue                # broken: take it now (a lock still there waits like any other)
+            except FileNotFoundError:
+                continue                        # released between the create and the look: try again at once
             except OSError:
                 pass
-            if time.monotonic() > deadline:
-                raise SystemIndexError(f"timed out waiting for {path}")
-            time.sleep(0.05)
+        except PermissionError:
+            denied_since = denied_since or time.monotonic()
+            if time.monotonic() - denied_since > SHARING_RETRY_S:
+                raise
+        if time.monotonic() > deadline:
+            raise SystemIndexError(f"timed out waiting for {path}")
+        time.sleep(0.05)
     try:
         yield
     finally:
         try:
-            path.unlink()
+            if path.read_text(encoding="utf-8", errors="replace") == mine:
+                path.unlink()
         except OSError:
             pass
 
@@ -1274,14 +1436,29 @@ def open_contained(path: Path, sdir: Path, opener) -> tuple:
 
 
 def collect_garbage(sdir: Path, reg: dict) -> list:
-    """Remove generation files no registry entry names, best-effort: one still held open is left for later."""
+    """Remove generation files no registry entry names, and leftover temp files (a build's temp database or a
+    registry write's temp file) older than TEMP_STALE_S, best-effort: one still held open is left for later. Runs
+    under the registry lock.
+
+    The temp sweep (audit B3, 2026-11-15): a build killed mid-way, say by index-tools' 300 s timeout, left its
+    .<module>.<build>.tmp.db for ever, because only GENERATION names were ever collected. Age alone decides, since
+    nothing records which builds are running; a live build writes its temp file as it goes, and on Windows an open
+    file cannot be deleted at all."""
     named = {str(e.get("db")) for e in reg.get("systems", {}).values()}
     removed = []
-    for f in sorted(Path(sdir).glob("*.db")):
-        if GENERATION.match(f.name) and f.name not in named:
-            try:
-                f.unlink()
-                removed.append(f.name)
-            except OSError:
-                pass
+    now = time.time()
+    for f in sorted(Path(sdir).iterdir(), key=lambda p: p.name):
+        try:
+            if GENERATION.match(f.name):
+                if f.name in named:
+                    continue
+            elif TEMP_DB.match(f.name) or TEMP_REGISTRY.match(f.name):
+                if now - f.lstat().st_mtime <= TEMP_STALE_S:
+                    continue
+            else:
+                continue
+            f.unlink()
+            removed.append(f.name)
+        except OSError:
+            pass
     return removed

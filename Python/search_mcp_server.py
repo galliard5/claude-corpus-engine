@@ -105,6 +105,11 @@ changed 2026-11-15: audit batch 3 — the two chain-search refusals that can onl
   resolution (a snapshot database changed; layer tables broke) carry the full resolution header.
   Resolution itself now refuses unreadable layer tables, so status reports them too.
 
+changed 2026-11-15: audit batch 4 — a vector chain search gives a layer with no vector table
+  any of the query's words (_query_words), quoted, instead of the query as FTS syntax, which
+  aborted the whole search on an apostrophe (C2); the module registry is read with the corpus
+  root, so an index/systems leading out of the corpus refuses (N1).
+
 changed 2026-09-25: records with no source of their own but row references
     (see system_index.py) show "Source (via row reference): <file> #<anchors> —
     row line(s) N  (<index record>)", one line per table on get_system_record and
@@ -229,7 +234,7 @@ def _schema_error(conn: sqlite3.Connection) -> str | None:
 
 def _registered() -> str:
     try:
-        names = sorted(system_index.read_registry(SYSTEMS_DIR)["systems"])
+        names = sorted(system_index.read_registry(SYSTEMS_DIR, _CORPUS_ROOT)["systems"])
     except system_index.SystemIndexError:
         names = []
     return ", ".join(names) if names else "none"
@@ -249,7 +254,7 @@ def _resolve_system(system: str, schemas: tuple = (system_index.SCHEMA_VERSION,)
     if not system_index.SYSTEM_NAME.match(name):
         return None, None, f"[!] Invalid system name {system!r}: use a registered module id ({_registered()})."
     try:
-        reg = system_index.read_registry(SYSTEMS_DIR)
+        reg = system_index.read_registry(SYSTEMS_DIR, _CORPUS_ROOT)
     except system_index.SystemIndexError as e:
         return None, None, f"[!] {e}"
     entry = reg["systems"].get(name)
@@ -369,6 +374,14 @@ def _wrap_query(query: str) -> str:
     syntax works as intended. Unbalanced quotes produce an FTS5 syntax error,
     caught by the OperationalError handler in search_corpus."""
     return f"({query.strip()})"
+
+
+def _query_words(query: str) -> str:
+    """A natural-language query as an FTS5 expression matching any of its words: each word (two characters or more)
+    quoted, so no punctuation in the query can be read as FTS syntax, joined with OR, each once in order. "" when the
+    query has no such word. Used only for a chain layer that a vector search falls back to FTS on (audit C2)."""
+    words = dict.fromkeys(w.casefold() for w in re.findall(r"\w+", query or "") if len(w) > 1)
+    return " OR ".join(f'"{w}"' for w in words)
 
 
 # ---------------------------------------------------------------------------
@@ -1259,11 +1272,23 @@ def _chain_search(query, limit, per_layer, mode, category_filter, type_filter, m
         inside, outside = rules_chain.scope(declarations, chain_modules)
 
         for l in order:
-            conn, lane_mode = conns[l.module], mode
+            conn, lane_mode, lane_filters = conns[l.module], mode, filters
             if lane_mode != "fts" and not _has_vector_table(conn):
                 lane_mode = "fts"
                 lane_notes[l.module] = "no vector table - fts"
-            results[l.module] = _run_lanes(conn, lane_mode, query, *filters, per_layer + 1)[0]
+                if mode == "vector":
+                    # A vector query is natural language, not FTS syntax (audit C2, 2026-11-15): handed to FTS as
+                    # written, an apostrophe aborted the WHOLE chain search with an fts5 syntax error, and plain
+                    # text became an implicit AND that usually matched nothing. This layer is searched for any of
+                    # the query's words instead, each quoted, and says so.
+                    words = _query_words(query)
+                    if not words:
+                        lane_notes[l.module] = "no vector table, and the query has no words to match lexically"
+                        results[l.module] = []
+                        continue
+                    lane_filters = _filters(words, category_filter, type_filter, missing_filter, reps)
+                    lane_notes[l.module] = "no vector table - fts on any of the query's words"
+            results[l.module] = _run_lanes(conn, lane_mode, query, *lane_filters, per_layer + 1)[0]
         counts = [min(len(results[l.module]), per_layer) for l in order]
         slots, need = rules_chain.allocate(counts, limit, per_layer)
         given = dict(zip([l.module for l in order], slots or counts))

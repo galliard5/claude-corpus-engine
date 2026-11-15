@@ -233,7 +233,18 @@ search server; `Search_Server.md` → *Game-system module databases* documents t
   removes the generation. Cleanup asks the registry on disk, not the build's own record of having published, so
   an interrupt (Ctrl-C) landing between the swap and that record cannot delete the generation the registry now
   names. Generations no registry entry names are removed best-effort afterwards; one still held
-  open by a reader is left for a later build.
+  open by a reader is left for a later build. So are a killed build's temp database and a registry write's temp
+  file, once they are six hours old.
+- **The registry lock** (`index/systems/registry.lock`) holds a token and the owner's pid and host. A waiter breaks
+  it at once when the owner is a process on this machine that no longer exists (a build killed inside the lock), and
+  otherwise once it is 90 seconds old: a publish or prune holds it for seconds, and a waiter gives up after 120. A
+  lock is renamed aside before it is removed and checked to be the one judged stale, so a lock another build took
+  meanwhile survives; release removes only the build's own lock. A Windows sharing violation on the lock or the
+  registry replace is retried for two seconds.
+- **The index directory must stay inside the corpus.** If `index/systems/` resolves outside the corpus through a
+  junction or link, every build, prune and report refuses before writing anything; set an absolute `[paths]
+  index_directory` instead. A layer that `extends` a module declared under `[rules_layers] not_searched`, and
+  therefore never built, builds without it as a dependency; a relation into such a module is refused.
 - **Row references** (`row_refs = a, b` under `[representation dataset]`) give provenance to records read from
   table rows, which have no source of their own: the build resolves each such record, one hop, to the index
   record owning the table's lines, and fails if any reference is missing, malformed, dangling, out of span or

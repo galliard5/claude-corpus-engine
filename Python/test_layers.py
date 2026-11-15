@@ -39,6 +39,15 @@ THE CONTRACTS THESE TESTS PIN (design: Working_Documents/Chain_Search_Design_Pro
                   it (transitively), says so and exits 1; it unregisters nothing when discovery finds no index.cfg
                   but the registry is not empty. It claims a module exactly as --system does (find_cfg), and a
                   --system build refuses a dependency cycle through the published builds (audit batch 2).
+  Lock            the registry lock names its owner; a dead owner on this host is broken at once, any other after
+                  LOCK_STALE_S, which is below the wait; breaking never removes a lock taken since; release
+                  removes only our own; sharing violations are retried briefly, then raised; a killed build's
+                  temp files are swept once old, a live one's never (audit batch 4: B3, B6, B7).
+  Loaded parent   a layer may extend a module declared not_searched and never built; a relation into one refuses;
+                  a built dependency is validated even when also declared (B8).
+  Anchor          a systems directory leading out of the corpus refuses build, report and prune before anything is
+                  read or written there; one configured outside on purpose is accepted; a registry.json linking
+                  out is not read (N1).
 
 Usage:
     python -m unittest test_layers -v
@@ -56,15 +65,19 @@ Command line arguments:
 #   the builder's three opens of a published generation, through both the build and the relations report.
 # changed 2026-11-13: TestEmbedCacheContainment (Codex 967): the embedding-cache ATTACH, on Codex's recipe.
 # changed 2026-11-14: TestAllSystemsSafety (audit batch 2); prune_registry now returns (unregistered, held, refused).
+# changed 2026-11-15: TestLockAndTempHygiene, TestLoadedParent and TestSystemsDirAnchor (audit batch 4).
 """
 
 import argparse
 import hashlib
 import io
 import json
+import os
 import re
 import shutil
+import socket
 import sqlite3
+import subprocess
 import sys
 import tempfile
 import time
@@ -1111,6 +1124,290 @@ class TestAllSystemsSafety(Tmp):
         self.assertEqual((self.registry_bytes(), self.generations()), (before, gens))
         (base.parent / si.RELATIONS_FILE).unlink()                       # without the relation it builds
         self.assertEqual(self.build(base).module, "basesys")
+
+
+def link_dir(case: unittest.TestCase, link: Path, target: Path) -> None:
+    """A directory junction (Windows) or symlink at `link` leading to `target`; skips the test if neither can be made."""
+    link.parent.mkdir(parents=True, exist_ok=True)
+    target.mkdir(parents=True, exist_ok=True)
+    try:
+        import _winapi
+        _winapi.CreateJunction(str(target), str(link))
+    except (ImportError, AttributeError, OSError):
+        try:
+            link.symlink_to(target, target_is_directory=True)
+        except OSError as e:
+            case.skipTest(f"cannot make a directory link here ({e})")
+    if link.resolve() != target.resolve():
+        case.skipTest("the directory link does not resolve to its target here")
+
+
+class TestLockAndTempHygiene(Tmp):
+    """Audit batch 4 (Working_Documents/Chain_Search_Audit_Fable.md B3, B6, B7): a build killed inside the lock does
+    not block the next one for minutes, a lock is broken without removing one taken since, release removes only our
+    own lock, a Windows sharing violation is retried briefly, and a killed build's temp files are swept."""
+
+    def setUp(self):
+        super().setUp()
+        self.sdir.mkdir(parents=True)
+        self.lock = self.sdir / si.LOCK
+
+    def short(self, timeout=0.6):
+        p = mock.patch.object(si, "LOCK_TIMEOUT_S", timeout)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def take(self):
+        t0 = time.monotonic()
+        with si.registry_lock(self.sdir):
+            held = self.lock.read_text(encoding="utf-8")
+        return time.monotonic() - t0, held
+
+    def dead_pid(self):
+        p = subprocess.Popen([sys.executable, "-c", "pass"])
+        p.wait()
+        return p.pid
+
+    def live_pid(self):
+        p = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+        self.addCleanup(lambda: (p.kill(), p.wait()))
+        return p.pid
+
+    def test_the_lock_names_its_owner(self):
+        with si.registry_lock(self.sdir):
+            token, pid, host, _stamp = self.lock.read_text(encoding="utf-8").split()
+        self.assertEqual((len(token), int(pid), host), (16, os.getpid(), socket.gethostname()))
+        self.assertFalse(self.lock.exists())
+
+    def test_a_build_killed_inside_the_lock_does_not_block_the_next(self):
+        self.short(5)
+        code = (f"import os, sys; sys.path.insert(0, {str(HERE)!r}); import system_index as si; "
+                f"from pathlib import Path; held = si.registry_lock(Path({str(self.sdir)!r})); held.__enter__(); "
+                f"os._exit(9)")                                          # killed inside the lock: no release
+        self.assertEqual(subprocess.run([sys.executable, "-c", code]).returncode, 9)
+        self.assertTrue(self.lock.exists())                              # left behind, fresh
+        took, _ = self.take()
+        self.assertLess(took, 2)                                         # not LOCK_STALE_S
+
+    def test_a_dead_owner_on_this_host_is_broken_at_once(self):
+        self.short(5)
+        write(self.lock, f"0123456789abcdef {self.dead_pid()} {socket.gethostname()} {time.time():.0f}\n")
+        took, held = self.take()
+        self.assertLess(took, 2)
+        self.assertIn(f" {os.getpid()} ", held)
+
+    def test_a_live_owner_another_host_or_the_old_format_waits(self):
+        self.short()
+        for text in (f"0123456789abcdef {self.live_pid()} {socket.gethostname()} 0\n",
+                     f"0123456789abcdef {self.dead_pid()} another-host 0\n",
+                     f"0123456789abcdef {os.getpid()} {socket.gethostname()} 0\n",
+                     f"{self.dead_pid()} {time.time():.0f}\n"):
+            with self.subTest(text=text):
+                write(self.lock, text)
+                with self.assertRaisesRegex(si.SystemIndexError, "timed out waiting"):
+                    self.take()
+                self.assertEqual(self.lock.read_text(encoding="utf-8"), text)
+
+    def test_a_stale_lock_is_broken_once_old_enough(self):
+        self.short(5)
+        write(self.lock, "0123456789abcdef 1 another-host 0\n")
+        old = time.time() - si.LOCK_STALE_S - 5
+        os.utime(self.lock, (old, old))
+        took, held = self.take()
+        self.assertLess(took, 2)
+        self.assertNotIn("another-host", held)
+        self.assertEqual(sorted(p.name for p in self.sdir.iterdir()), [])  # nothing left aside
+
+    def test_the_stale_threshold_lets_one_waiter_recover(self):
+        self.assertLess(si.LOCK_STALE_S, si.LOCK_TIMEOUT_S)
+
+    def test_breaking_never_removes_a_lock_taken_since(self):
+        write(self.lock, "fresh lock\n")
+        si._break_lock(self.lock, "the stale lock this waiter judged\n")
+        self.assertEqual(self.lock.read_text(encoding="utf-8"), "fresh lock\n")
+        si._break_lock(self.lock, "fresh lock\n")
+        self.assertFalse(self.lock.exists())
+        self.assertEqual(list(self.sdir.iterdir()), [])                  # the renamed-aside copy is gone too
+
+    def test_release_removes_only_our_own_lock(self):
+        with si.registry_lock(self.sdir):
+            write(self.lock, "a successor's lock\n")                     # ours was broken, another took it
+        self.assertEqual(self.lock.read_text(encoding="utf-8"), "a successor's lock\n")
+
+    def test_a_sharing_violation_on_the_registry_replace_is_retried(self):
+        real, calls = os.replace, []
+
+        def flaky(src, dst):
+            calls.append(dst)
+            if len(calls) < 3:
+                raise PermissionError(5, "Access is denied")
+            return real(src, dst)
+        with mock.patch.object(si.os, "replace", side_effect=flaky):
+            si.write_registry(self.sdir, {"schema_version": 2, "systems": {}})
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(self.registry(), {"schema_version": 2, "systems": {}})
+
+    def test_a_lasting_sharing_violation_fails_fast_and_cleanly(self):
+        si.write_registry(self.sdir, {"schema_version": 2, "systems": {}})
+        before = self.registry_bytes()
+        with mock.patch.object(si, "SHARING_RETRY_S", 0.2), \
+                mock.patch.object(si.os, "replace", side_effect=PermissionError(5, "Access is denied")):
+            t0 = time.monotonic()
+            with self.assertRaises(PermissionError):
+                si.write_registry(self.sdir, {"schema_version": 2, "systems": {"x": {}}})
+        self.assertLess(time.monotonic() - t0, 2)
+        self.assertEqual(self.registry_bytes(), before)
+        self.assertEqual(sorted(p.name for p in self.sdir.iterdir()), [si.REGISTRY])   # no temp file left
+
+    def test_a_sharing_violation_on_the_lock_create_is_retried(self):
+        real, calls = os.open, []
+
+        def flaky(path, *a, **kw):
+            if str(path).endswith(si.LOCK):
+                calls.append(path)
+                if len(calls) < 3:
+                    raise PermissionError(5, "Access is denied")
+            return real(path, *a, **kw)
+        with mock.patch.object(si.os, "open", side_effect=flaky):
+            self.take()
+        self.assertEqual(len(calls), 3)
+
+    def test_a_lasting_sharing_violation_on_the_lock_fails_fast(self):
+        self.short(30)
+        with mock.patch.object(si, "SHARING_RETRY_S", 0.2), \
+                mock.patch.object(si.os, "open", side_effect=PermissionError(5, "Access is denied")):
+            t0 = time.monotonic()
+            with self.assertRaises(PermissionError):
+                self.take()
+        self.assertLess(time.monotonic() - t0, 3)
+
+    def test_pid_liveness(self):
+        self.assertIs(si._pid_alive(self.dead_pid()), False)
+        self.assertIs(si._pid_alive(self.live_pid()), True)
+        self.assertIs(si._pid_alive(os.getpid()), True)
+        exited = subprocess.Popen([sys.executable, "-c", "pass"])
+        exited.wait()                       # exited, but its handle still held (Windows: OpenProcess succeeds)
+        self.assertIs(si._pid_alive(exited.pid), False)
+
+    def test_a_killed_builds_temp_files_are_swept_once_old(self):
+        old = time.time() - si.TEMP_STALE_S - 60
+        names = [".basesys.20200101T000000Z-abcdef.tmp.db", ".basesys.20200101T000000Z-abcdef.tmp.db-journal",
+                 ".registry.json.4242.tmp", "notes.db", ".other.tmp", "readme.txt"]
+        for n in names:
+            write(self.sdir / n, "x")
+            os.utime(self.sdir / n, (old, old))
+        fresh = write(self.sdir / f".basesys.{si.new_build_id()}.tmp.db", "a build still running")
+        built = self.build(make_base(self.root))
+        self.assertEqual(sorted(built.collected), sorted(names[:3]))
+        left = {p.name for p in self.sdir.iterdir()}
+        self.assertTrue({"notes.db", ".other.tmp", "readme.txt", fresh.name} <= left)
+        self.assertFalse(set(names[:3]) & left)
+
+
+class TestLoadedParent(Tmp):
+    """Audit B8, ruled 2026-11-15: a layer may extend a module loaded by declaration ([rules_layers] not_searched),
+    which has no index.cfg and can never be built; a relation into one still refuses."""
+
+    INTO_BASELINE = ('- entry: {key: "doc:notes/house.md"}\n'
+                     '  target: {layer: baseline, key: "doc:rules/core.md"}\n'
+                     '  mode: add\n  status: open\n')
+
+    def setUp(self):
+        super().setUp()
+        write(self.root / "Game_Systems" / "Baseline" / "baseline.md", manifest("baseline", resolution="defined"))
+
+    def test_an_extends_parent_loaded_by_declaration(self):
+        cfg = make_layer(self.root, kind="homebrew", extends="baseline")
+        with self.assertRaisesRegex(si.SystemIndexError, r"'baseline', which hb depends on, is not built"):
+            self.build(cfg)                                              # not declared: as before
+        b = bi.build_and_publish(self.root, self.index, cfg, build_vectors=False, not_searched=("baseline",))
+        entry = self.registry()["systems"]["hb"]
+        self.assertEqual((b.module, entry["layer"]["extends"], entry["layer"]["depends_on"]), ("hb", "baseline", {}))
+        self.assertNotIn("baseline", self.registry()["systems"])
+
+    def test_through_the_builder_entry_points(self):
+        make_layer(self.root, kind="homebrew", extends="baseline")
+        one = mock.Mock(all_systems=False, system="hb", no_vectors=True)
+        with mock.patch("builtins.print"):
+            self.assertEqual(bi.run_systems(one, self.root, self.index, (PRIVATE,), ("baseline",)), 0)
+        cfg = write(Path(self._tmp.name) / "indexer.cfg",
+                    f"[paths]\nroot_directory = {self.root}\nindex_directory = /index/\n\n"
+                    f"[rules_layers]\nprivate_roots = {PRIVATE}\nnot_searched = baseline\n")
+        (self.sdir / si.REGISTRY).unlink()                               # start again, through main()
+        argv = ["build_indexes.py", "--cfg", str(cfg), "--system", "hb", "--no-vectors", "--no-pause"]
+        with mock.patch.object(sys, "argv", argv), mock.patch.dict(os.environ, {"CORPUS_ROOT": ""}), \
+                mock.patch("builtins.print"):
+            self.assertEqual(bi.main(), 0)
+        self.assertEqual(self.registry()["systems"]["hb"]["layer"]["depends_on"], {})
+
+    def test_a_relation_into_a_loaded_module_refuses(self):
+        cfg = make_layer(self.root, relations=self.INTO_BASELINE, kind="homebrew", extends="baseline")
+        with self.assertRaisesRegex(si.SystemIndexError, "hb declares relations into 'baseline', which indexer.cfg "
+                                                         r"\[rules_layers\] declares not_searched"):
+            bi.build_and_publish(self.root, self.index, cfg, build_vectors=False, not_searched=("baseline",))
+        self.assertEqual(self.registry_bytes(), b"")
+
+    def test_a_built_dependency_is_still_validated_when_also_declared(self):
+        self.build(make_base(self.root))
+        b = bi.build_and_publish(self.root, self.index, make_layer(self.root, relations=relation()),
+                                 build_vectors=False, not_searched=("basesys",))
+        self.assertEqual(set(self.registry()["systems"]["hb"]["layer"]["depends_on"]), {"basesys"})
+        self.assertEqual(b.module, "hb")
+
+
+class TestSystemsDirAnchor(Tmp):
+    """Audit N1: containment is anchored to the corpus, not to wherever index/systems resolves."""
+
+    def outside(self):
+        return Path(self._tmp.name) / "outside_systems"
+
+    def redirect(self):
+        """index/systems moved outside the corpus, with a junction left in its place."""
+        shutil.move(str(self.sdir), str(self.outside()))
+        link_dir(self, self.sdir, self.outside())
+
+    def test_a_systems_dir_leading_out_refuses_build_report_and_prune(self):
+        base = make_base(self.root)
+        self.build(base)
+        self.build(make_layer(self.root, relations=relation()))
+        self.redirect()
+        stray = write(self.outside() / "basesys.20200101T000000Z-abcdef.db", "an unreferenced generation")
+        before = sorted(p.name for p in self.outside().iterdir())
+        with self.assertRaisesRegex(si.SystemIndexError, "resolves outside the corpus .through a link or junction., "
+                                                         "so no module database under it is trusted"), \
+                mock.patch.object(bi, "_dependency_snapshot", side_effect=bi._dependency_snapshot) as snap, \
+                mock.patch.object(bi, "build_system_db", side_effect=bi.build_system_db) as built:
+            self.build(make_layer(self.root, relations=relation()))
+        self.assertEqual((snap.call_count, built.call_count), (0, 0))   # refused before reading or building anything
+        with self.assertRaisesRegex(si.SystemIndexError, "resolves outside the corpus"):
+            self.build(base)
+        with self.assertRaisesRegex(si.SystemIndexError, "resolves outside the corpus"):
+            bi.relations_report(self.root, self.index, "hb", (PRIVATE,))
+        base.unlink()
+        gone, held, refused = bi.prune_registry(self.root, self.index, (PRIVATE,))
+        self.assertEqual((gone, held), ([], {}))
+        self.assertIn("resolves outside the corpus", refused)
+        self.assertEqual(sorted(p.name for p in self.outside().iterdir()), before)   # nothing collected out there
+        self.assertTrue(stray.exists())
+
+    def test_an_index_directory_configured_outside_the_corpus_is_the_operators_choice(self):
+        index = Path(self._tmp.name) / "elsewhere" / "index"
+        b = bi.build_and_publish(self.root, index, make_base(self.root), build_vectors=False)
+        self.assertEqual(si.read_registry(si.systems_dir(index), self.root)["systems"]["basesys"]["build_id"],
+                         b.build_id)
+
+    def test_a_registry_file_leading_out_is_not_read(self):
+        self.build(make_base(self.root))
+        out = self.outside() / si.REGISTRY
+        out.parent.mkdir(parents=True)
+        shutil.move(str(self.sdir / si.REGISTRY), str(out))
+        try:
+            (self.sdir / si.REGISTRY).symlink_to(out)
+        except OSError as e:
+            self.skipTest(f"cannot make a file symlink here ({e})")
+        with self.assertRaisesRegex(si.SystemIndexError, "resolves outside systems/ .through a link., so it is not "
+                                                         "read"):
+            si.read_registry(self.sdir)
 
 
 class TestRealLegacyModule(unittest.TestCase):

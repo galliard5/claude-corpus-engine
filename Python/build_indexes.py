@@ -81,6 +81,11 @@ Replaces: build_directory_indexes.py + build_search_index.py
 #   refused): it holds a module a published dependent still needs, and prunes nothing on an empty discovery, both
 #   reported as failures. --all-systems claims each module through find_cfg, as --system does. _dependency_snapshot
 #   refuses a cycle through the published builds (_published_cycle).
+# changed 2026-11-15: audit batch 4. An extends parent declared [rules_layers] not_searched and not built is loaded by
+#   declaration: accepted, and left out of depends_on; a relation into one refuses (B8, ruled by the user). main()
+#   passes not_searched through run_systems and run_relations. Every registry read before the lock passes the corpus
+#   root, and prune checks the systems directory before taking the lock, so an index/systems leading out of the
+#   corpus refuses before anything is read or written there (N1). The lock and temp-file fixes are in system_index.
 
 Usage:
     python build_indexes.py                   # reads indexer.cfg, writes all outputs
@@ -250,7 +255,8 @@ def parse_private_roots(cfg: dict, root: Path) -> tuple:
     by system_index.validate_private_roots, and not_searched names by known_modules. Only this section is strict;
     the rest of the cfg is read as before."""
     # The whole section is parsed and validated here (system_index.parse_rules_layers), not_searched included, so a
-    # build and the search server can never disagree about it; the builder itself uses only the private roots.
+    # build and the search server can never disagree about it. main() takes not_searched from the same parse, for
+    # an extends parent loaded by declaration (_dependency_snapshot, audit B8).
     return system_index.parse_rules_layers(cfg, root)[0]
 
 
@@ -1201,15 +1207,28 @@ def build_system_db(cfg: "system_index.SystemCfg", gen_path: Path, live_db, buil
     return stats, counts
 
 
-def _dependency_snapshot(cfg: "system_index.SystemCfg", sdir: Path, reg: dict) -> tuple:
+def _dependency_snapshot(cfg: "system_index.SystemCfg", sdir: Path, reg: dict, not_searched=()) -> tuple:
     """({layer: build_id}, {layer: database path}) for every layer `cfg` depends on, from ONE registry snapshot.
     Each must be registered, its generation file present, its own db_info must agree with the registry (build id,
     module and schema version), and that schema must be one this builder can validate against
     (SUPPORTED_DEPENDENCY_SCHEMAS); otherwise the build refuses before anything publishes, naming the layer and the
-    fix. The db_info read is contained at the open itself (system_index.open_contained, Codex 965)."""
+    fix. The db_info read is contained at the open itself (system_index.open_contained, Codex 965).
+
+    One exception (audit B8, ruled 2026-11-15): an extends parent that is not built but is declared under indexer.cfg
+    [rules_layers] not_searched is loaded by declaration, the way the design recommends for a base system, so there
+    is nothing to build it from and the old "build it first" could never succeed. Extends alone reads nothing from
+    the parent, so it is accepted and left out of depends_on; the registry still records it as layer.extends. A
+    relation INTO such a module stays refused: with no database, its target unit cannot be validated."""
     depends_on, dbs, problems = {}, {}, []
+    targets = {r.target.layer for r in cfg.relations}
     for layer in cfg.dependencies():
         entry = reg["systems"].get(layer)
+        if entry is None and layer in not_searched:
+            if layer in targets:
+                problems.append(f"{cfg.module} declares relations into {layer!r}, which indexer.cfg [rules_layers] "
+                                f"declares not_searched: it has no database, so their targets cannot be validated; "
+                                f"drop those relations, or index {layer} and remove it from not_searched")
+            continue                        # an extends parent loaded by declaration: nothing to validate against
         if entry is None:
             problems.append(f"{layer!r}, which {cfg.module} depends on, is not built; build it first "
                             f"(build_indexes.py --system {layer})")
@@ -1286,7 +1305,8 @@ def _published_cycle(module: str, deps, reg: dict):
     return None
 
 
-def build_and_publish(root: Path, index_dir: Path, cfg_path: Path, build_vectors: bool) -> SystemBuild:
+def build_and_publish(root: Path, index_dir: Path, cfg_path: Path, build_vectors: bool,
+                      not_searched: tuple = ()) -> SystemBuild:
     """Validate, build, verify and publish one module's database.
 
     The build writes a temp file garbage collection can never match (system_index.temp_path). Only then, under the
@@ -1301,9 +1321,9 @@ def build_and_publish(root: Path, index_dir: Path, cfg_path: Path, build_vectors
     result = SystemBuild(cfg.module)
     sdir = system_index.systems_dir(index_dir)
     sdir.mkdir(parents=True, exist_ok=True)
-    reg_now = system_index.read_registry(sdir)
+    reg_now = system_index.read_registry(sdir, root)
     # One registry snapshot decides every dependency a layered module is validated against (legacy: none).
-    depends_on, dep_dbs = _dependency_snapshot(cfg, sdir, reg_now) if cfg.layered else ({}, {})
+    depends_on, dep_dbs = _dependency_snapshot(cfg, sdir, reg_now, not_searched) if cfg.layered else ({}, {})
     fingerprint = system_index.fingerprint(cfg, depends_on)
     build_id = system_index.new_build_id()
     tmp = system_index.temp_path(sdir, cfg.module, build_id)
@@ -1324,7 +1344,7 @@ def build_and_publish(root: Path, index_dir: Path, cfg_path: Path, build_vectors
                 f"{cfg.module}: the config or sources changed during the build, so the database may not match "
                 f"its recorded fingerprint; nothing published — rebuild")
         with system_index.registry_lock(sdir):
-            reg = system_index.read_registry(sdir)
+            reg = system_index.read_registry(sdir, root)
             moved = sorted(layer for layer, build in depends_on.items()
                            if (reg["systems"].get(layer) or {}).get("build_id") != build)
             if moved:
@@ -1398,10 +1418,13 @@ def prune_registry(root: Path, index_dir: Path, private_roots: tuple = ()) -> tu
       and pruning would delete every generation along with its embedding cache. `refused` says why; to retire every
       module on purpose, delete index/systems/registry.json by hand."""
     sdir = system_index.systems_dir(index_dir)
+    outside = system_index.systems_dir_problem(sdir, root)       # before the lock: nothing is written out there
+    if outside:
+        return [], {}, f"{outside}; nothing was pruned"
     if not (sdir / system_index.REGISTRY).exists():
         return [], {}, None
     with system_index.registry_lock(sdir):
-        reg = system_index.read_registry(sdir)
+        reg = system_index.read_registry(sdir, root)
         if reg["systems"] and not system_index.discover(root, private_roots):
             return [], {}, (f"no index.cfg was found under Game_Systems or the private roots, but "
                             f"{len(reg['systems'])} module(s) are registered, so nothing was unregistered. If every "
@@ -1449,7 +1472,7 @@ def _ordered_targets(paths: list) -> tuple:
         return [by_module[c.module] for c in system_index.dependency_order(rest)], failures
 
 
-def run_systems(args, root: Path, index_dir: Path, private_roots: tuple = ()) -> int:
+def run_systems(args, root: Path, index_dir: Path, private_roots: tuple = (), not_searched: tuple = ()) -> int:
     """--system / --all-systems. Builds only module databases; the corpus is untouched. --all-systems builds every
     discovered module (Game_Systems and the private roots) in dependency order."""
     failures = 0
@@ -1500,7 +1523,8 @@ def run_systems(args, root: Path, index_dir: Path, private_roots: tuple = ()) ->
         started = time.perf_counter()
         print(f"\nModule database: {cfg_path.parent.name}")
         try:
-            b = build_and_publish(root, index_dir, cfg_path, build_vectors=not args.no_vectors)
+            b = build_and_publish(root, index_dir, cfg_path, build_vectors=not args.no_vectors,
+                                  not_searched=not_searched)
         except Exception as e:
             failures += 1
             print(f"  [!] FAILED — nothing published: {e}")
@@ -1678,7 +1702,8 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def relations_report(root: Path, index_dir: Path, module: str, private_roots: tuple = ()) -> list:
+def relations_report(root: Path, index_dir: Path, module: str, private_roots: tuple = (),
+                     not_searched: tuple = ()) -> list:
     """Read-only. [(Relation, current target hash, pin state)] for a layered module, resolving its entries in its
     own PUBLISHED database and its targets in theirs, from one registry snapshot. Raises SystemIndexError naming
     what to build or fix first."""
@@ -1689,13 +1714,13 @@ def relations_report(root: Path, index_dir: Path, module: str, private_roots: tu
     if not cfg.layered:
         raise system_index.SystemIndexError(f"{module} declares no relations or extends; there is nothing to report")
     sdir = system_index.systems_dir(index_dir)
-    reg = system_index.read_registry(sdir)
+    reg = system_index.read_registry(sdir, root)
     entry = reg["systems"].get(module)
     if entry is None:
         raise system_index.SystemIndexError(f"{module} is not built; build it first (build_indexes.py --system "
                                             f"{module}), or fix the errors that build reports")
     own = system_index.resolve_db(sdir, module, entry)
-    _deps, dep_dbs = _dependency_snapshot(cfg, sdir, reg)
+    _deps, dep_dbs = _dependency_snapshot(cfg, sdir, reg, not_searched)
     conn, why = system_index.open_contained(own, sdir, _open_published_ro)
     if conn is None:                        # containment enforced at the open itself (Codex 965)
         raise system_index.SystemIndexError(f"{module}: its published database {why}; nothing was reported — run "
@@ -1706,10 +1731,10 @@ def relations_report(root: Path, index_dir: Path, module: str, private_roots: tu
         conn.close()
 
 
-def run_relations(args, root: Path, index_dir: Path, private_roots: tuple) -> int:
+def run_relations(args, root: Path, index_dir: Path, private_roots: tuple, not_searched: tuple = ()) -> int:
     start = time.perf_counter()
     try:
-        rows = relations_report(root, index_dir, args.relations.strip(), private_roots)
+        rows = relations_report(root, index_dir, args.relations.strip(), private_roots, not_searched)
     except system_index.SystemIndexError as e:
         print(f"Error: {e}")
         print(f"Runtime: {time.perf_counter() - start:.2f}s")
@@ -1744,20 +1769,20 @@ def main() -> int:
         print(f"Error: {e}")
         return 1
     try:
-        private_roots = parse_private_roots(cfg, root)
+        private_roots, not_searched = system_index.parse_rules_layers(cfg, root)
     except system_index.SystemIndexError as e:
         print(f"Error: [rules_layers] in {Path(args.cfg).name}: {e}")
         return 1
 
     if args.relations:
-        code = run_relations(args, root, index_dir, private_roots)
+        code = run_relations(args, root, index_dir, private_roots, not_searched)
         if not args.no_pause:
             input("\nPress Enter to exit...")
         return code
 
     # Module databases are a separate build: an ordinary run (the lore refresh) never rebuilds rulebooks.
     if args.system or args.all_systems:
-        code = run_systems(args, root, index_dir, private_roots)
+        code = run_systems(args, root, index_dir, private_roots, not_searched)
         if not args.no_pause:
             input("\nPress Enter to exit...")
         return code

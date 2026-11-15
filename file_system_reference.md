@@ -275,7 +275,8 @@ names is opened and checked to still be that build before any query runs.
   resolved ("search again"). Stale sources are a warning, not a refusal, and so is a chain listed against its own
   layers: one that puts a layer below the layer it extends or relates to, which the search would otherwise treat as
   the more specific of the two. `mode="vector"`/`"hybrid"` falls back to `fts` per layer, saying so, when a layer has no vector
-  table.
+  table. In `vector` mode that layer is searched for any of the query's words, since the query is plain language;
+  in `hybrid` mode it gets the query as written.
 **Modes:**
 - `"fts"` *(default)* — full-text BM25; exact terms, FTS5 syntax below. Unchanged legacy behaviour.
 - `"vector"` — semantic nearest-neighbour over embeddings; finds meaning-similar docs with no shared words. Query is plain language.

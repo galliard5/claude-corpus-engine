@@ -33,11 +33,14 @@ Command line arguments:
     --no-pause   Skip end-of-run pause
 
 # changed 2026-11-12: created (chain-aware search stage 2, Codex 945).
+# changed 2026-11-15: TestAuditBatch4 — a systems directory leading out of the corpus refuses resolution and status
+#   (N1); campaign discovery never lists or matches a profile found outside (N4); path keys fold case (C4).
 """
 
 import argparse
 import hashlib
 import json
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -1020,6 +1023,52 @@ class TestRegistryShape(Fixture):
         self.assertEqual([(l.role, l.schema, l.freshness) for l in res.layers[1:]],
                          [(rc.ROLE_INDEXED, 2, "unchanged"), (rc.ROLE_INDEXED, 3, "unchanged")])
         self.assertEqual([rc.entry_problem(e) for e in self.registry()["systems"].values()], [None, None])
+
+
+class TestAuditBatch4(Fixture):
+    """Audit batch 4 (Working_Documents/Chain_Search_Audit_Fable.md N1, N4, C4): containment anchored to the corpus,
+    campaign discovery that never lists a name found outside it, and path keys that agree between host and
+    container."""
+
+    def test_a_systems_dir_leading_out_of_the_corpus_refuses(self):
+        sdir, outside = si.systems_dir(self.index), Path(self._tmp.name) / "outside_systems"
+        shutil.move(str(sdir), str(outside))
+        self.link_dir(sdir, outside)
+        why = "resolves outside the corpus (through a link or junction), so no module database under it is trusted"
+        res = self.resolve(chain="basesys")
+        self.assertTrue(res.refused)
+        self.assertTrue(any(why in r for r in res.refusals), res.refusals)
+        self.assertEqual(res.layers, [])                                 # refused before any layer was looked at
+        self.assertIn(why, self.status(chain="basesys"))
+        self.assertIn(why, self.status(system="basesys"))
+        self.assertIn(why, self.status(campaign="Camp_One"))
+
+    def test_campaign_discovery_never_lists_a_name_found_outside(self):
+        out = Path(self._tmp.name) / "outside_setting"
+        write(out / "Scenarios" / "Secret_Camp" / rc.PROFILE_FILE, profile(["Baseline"]))
+        self.link_dir(self.root / "World_Building" / "Setting_L", out)
+        self.assertIn("Secret_Camp", {p.parent.name for p in rc.campaign_profiles(self.root)})   # the glob sees it
+        path, why = rc.find_campaign(self.root, "Nope")
+        self.assertIsNone(path)
+        self.assertIn("Camp_One", why)
+        self.assertNotIn("Secret_Camp", why)
+        with mock.patch.object(rc, "_profile_fields", side_effect=rc._profile_fields) as read:
+            path, why = rc.find_campaign(self.root, "secret_camp")
+        self.assertIsNone(path)
+        self.assertIn("resolves outside the corpus (through a link or junction); it is not read", why)
+        self.assertNotIn("Setting_L", why)
+        self.assertEqual(read.call_count, 0)
+
+    def test_an_outside_namesake_does_not_make_a_campaign_ambiguous(self):
+        out = Path(self._tmp.name) / "outside_setting"
+        write(out / "Scenarios" / "Camp_One" / rc.PROFILE_FILE, profile(["Baseline"]))
+        self.link_dir(self.root / "World_Building" / "Setting_L", out)
+        self.assertEqual(rc.find_campaign(self.root, "Camp_One"), (self.camp1 / rc.PROFILE_FILE, None))
+
+    def test_path_keys_fold_case_on_every_platform(self):
+        a, b = self.root / "Game_Systems" / "Basesys" / "Not_There.md", self.root / "game_systems" / "basesys" / "not_there.md"
+        with mock.patch.object(rc.os.path, "normcase", lambda s: s):     # as on Linux, where normcase is a no-op
+            self.assertEqual(rc._key(a), rc._key(b))
 
 
 class TestRealCampaignReadOnly(unittest.TestCase):

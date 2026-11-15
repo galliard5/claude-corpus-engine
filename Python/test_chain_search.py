@@ -39,6 +39,9 @@ decisions Codex 938, refinement A; approval Codex 955)
                adaptation) and breaks nothing else; an exception from the embedding lane comes back as a message;
                a connection whose vector extension fails to load is closed; a published generation is opened
                immutable, so a -wal or -journal planted beside it is never read.
+  Agreement    index_status and search refuse a layer with broken relation tables alike (resolution reads them,
+               contained at its own open); a chain listing a layer below one it extends or relates to is warned
+               about in both; a refusal found after resolution still carries the full header.
 
 Usage:
     python -m unittest test_chain_search -v
@@ -50,6 +53,8 @@ Command line arguments:
 # changed 2026-11-12: created (chain-aware search stage 3, Codex 955).
 # changed 2026-11-14: TestAuditRobustness — audit batch 1 (undecodable inputs, the chain search catch-all, the
 #   connection closed when its extension fails to load, published generations opened immutable).
+# changed 2026-11-15: TestStatusAgreesWithSearch — audit batch 3; the two broken-layer-table tests follow the refusal
+#   to resolution (and now check index_status too); the post-resolution refusal test checks for the header.
 """
 
 import argparse
@@ -295,7 +300,7 @@ class TestRefusalsAndWarnings(ChainFixture):
             conn.close()
         out = self.search(chain="basesys,hb")
         self.assertTrue(out.startswith(f"No search was run for: {QUERY}"), out)
-        self.assertIn("[!] Chain search refused — hb: its schema-3 database has unreadable layer tables (relations "
+        self.assertIn("    - hb: its schema-3 database has unreadable layer tables (relations "
                       "item 1: mode '{' is not one of override, add, extend, partition, fall_through, n_a); rebuild "
                       "it (build_indexes.py --system hb)", out)
         self.assertEqual(self.hits(out), [])
@@ -322,8 +327,13 @@ class TestRefusalsAndWarnings(ChainFixture):
                 finally:
                     conn.close()
                 out = self.search(chain="basesys,hb")
-                self.assertIn("[!] Chain search refused — hb: its schema-3 database has unreadable layer tables", out)
+                why = "    - hb: its schema-3 database has unreadable layer tables"
+                self.assertIn("[!] Chain refused", out)                        # refused at resolution, with header
+                self.assertIn(why, out)
                 self.assertEqual(self.hits(out), [])
+                status = self.status(chain="basesys,hb")                       # status reports it exactly the same
+                self.assertIn("[!] Chain refused", status)
+                self.assertIn(why, status)
 
     def test_the_timeout_guard_covers_every_layer(self):
         with mock.patch.object(srv, "_QUERY_TIMEOUT_S", -1.0), mock.patch.object(srv, "_PROGRESS_STEPS", 1):
@@ -592,6 +602,7 @@ class TestSnapshotCoherence(ChainFixture):
             out = self.search(chain="basesys,hb")
         self.assertIn(f"[!] Chain search refused — the database the snapshot named for basesys (build {old}) "
                       f"changed after the chain was resolved", out)
+        self.assertIn("\nRules chain status: explicit chain\n", out)        # with the full resolution header
         self.assertEqual(self.hits(out), [])
         self.assertNotIn(self.rebuilt.build_id, out)
 
@@ -1263,6 +1274,70 @@ class TestAuditRobustness(ChainFixture):
         finally:
             held.close()
         self.assertEqual([m for _p, m in self.hits(self.search(chain="basesys,hb"))], ["hb", "basesys", "basesys"])
+
+
+# ================================================================ status and search agree (audit batch 3)
+
+class TestStatusAgreesWithSearch(ChainFixture):
+    """Audit batch 3 (Working_Documents/Chain_Search_Audit_Fable.md C1 and the two reference mismatches): a chain
+    listed against its own extends is flagged; broken layer tables are refused at resolution, so status says so too;
+    a refusal found after resolution still carries the full header."""
+
+    ORDER = "hb extends basesys, but the chain lists basesys above it"
+
+    def test_a_chain_listed_against_its_extends_is_flagged_in_status_and_search(self):
+        for out in (self.search(chain="hb,basesys"), self.status(chain="hb,basesys")):
+            self.assertIn(f"    [!] {self.ORDER} — a chain is lowest first, so basesys is treated as the more "
+                          f"specific layer; list basesys before hb", out)
+        self.assertEqual(len(self.hits(self.search(chain="hb,basesys"))), 3)      # a warning: the search still runs
+        for chain in ("basesys,hb", "baseline,basesys,hb"):
+            self.assertNotIn(self.ORDER, self.search(chain=chain))
+
+    def test_a_campaign_profile_written_highest_first_is_flagged(self):
+        self.campaign("Setting_A/Scenarios/Camp_Rev", ["Hb", "Basesys", "Baseline"])
+        self.assertIn(self.ORDER, self.status(campaign="Camp_Rev"))
+
+    def test_a_relation_dependency_listed_above_its_layer_is_flagged(self):
+        # hb becomes a system-kind layer, extending nothing, that still relates to basesys: the relation alone makes
+        # basesys a dependency. (A homebrew layer must declare extends.)
+        write(self.hb_cfg.parent / "hb.md", manifest("hb", kind="system"))
+        self.hb = self.build(self.hb_cfg)
+        self.assertEqual(self.registry()["systems"]["hb"]["layer"]["extends"], "")
+        self.assertIn("hb depends on (through a declared relation) basesys, but the chain lists basesys above it",
+                      self.status(chain="hb,basesys"))
+
+    def test_layer_tables_broken_after_resolution_still_refuse_with_the_header(self):
+        def breaks(conn, layer):
+            raise si.SystemIndexError(f"{layer}: its schema-3 database has unreadable layer tables (test)")
+        with mock.patch.object(rc, "_layer_tables_problem", return_value=None), \
+                mock.patch.object(rc, "read_declarations", side_effect=breaks):
+            out = self.search(chain="basesys,hb")
+        self.assertIn("[!] Chain search refused — hb: its schema-3 database has unreadable layer tables (test)", out)
+        self.assertIn("\nRules chain status: explicit chain\n", out)
+        self.assertEqual(self.hits(out), [])
+
+    def test_the_layer_table_read_is_contained_at_its_own_open(self):
+        # check_publication accepts hb's generation, which then becomes a link leading out of index/systems before
+        # resolution reads its layer tables: that read must refuse, not follow the link.
+        gen, outside = self.gen("hb"), Path(self._tmp.name) / "outside.db"
+        real = si.check_publication
+
+        def then_redirect(sdir, module, entry):
+            got = real(sdir, module, entry)
+            if module == "hb":
+                gen.replace(outside)
+                try:
+                    gen.symlink_to(outside)
+                except OSError as e:
+                    outside.replace(gen)
+                    self.skipTest(f"cannot make a file symlink here ({e})")
+            return got
+        with mock.patch.object(si, "check_publication", side_effect=then_redirect), \
+                mock.patch.object(sqlite3, "connect", side_effect=sqlite3.connect) as spy:
+            refusals = self.resolve(chain="basesys,hb").refusals
+        self.assertTrue(any(r.startswith("hb: its database now resolves outside index/systems") for r in refusals),
+                        refusals)
+        self.assertFalse([c for c in spy.call_args_list if "outside.db" in str(c.args[0])])
 
 
 def main():

@@ -95,6 +95,9 @@ Command line arguments: none (library module).
 #   equivalent spellings of one heading show their conflict.
 # changed 2026-11-14: a campaign or adaptation profile that is not valid UTF-8 refuses (or is non-authoritative)
 #   instead of raising, and the message says so (audit batch 1, Working_Documents/Chain_Search_Audit_Fable.md X1).
+# changed 2026-11-15: audit batch 3 — resolve checks a schema-3 layer's relation tables (_layer_tables_problem, via
+#   the contained, immutable open), so index_status refuses exactly as chain search does; and it warns when the chain
+#   lists a layer below a layer it extends or relates to, as published (_order_warnings, audit C1).
 """
 
 import hashlib
@@ -433,6 +436,47 @@ def _check_sidecars(root: Path, res: Resolution, raw, campaign_dir: Path) -> Non
         res.sidecars.append(s)
 
 
+def _layer_tables_problem(sdir: Path, db, module: str):
+    """Why a schema-3 layer's layer tables cannot be read (read_declarations' refusal), or None.
+
+    Resolution checks this, not only the search, so index_status reports the refusal exactly as a chain search would
+    (audit 2026-11-14: status called such a layer healthy while the search refused it). The database is opened like
+    every read of a generation: contained at the open, and immutable."""
+    import sqlite3
+    conn, why = system_index.open_contained(Path(db), sdir,
+                                            lambda real: sqlite3.connect(system_index.generation_uri(real), uri=True))
+    if conn is None:
+        return f"{module}: its database {why}"
+    try:
+        read_declarations(conn, module)
+    except system_index.SystemIndexError as e:
+        return str(e)
+    finally:
+        conn.close()
+    return None
+
+
+def _order_warnings(layers: list, published: dict) -> list:
+    """A warning for each indexed layer that the chain lists below a layer it builds on, as published: its extends
+    parent, or a layer it depends on through a declared relation. A chain is lowest first, so the code treats the
+    layer listed later as the more specific one; listed against its own extends, a homebrew layer's base ranks as
+    more specific than the homebrew and takes the extra slots, and the homebrew's hits read "relation undeclared"
+    directly under their own declarations (audit C1). A warning, not a refusal: the order is the user's declaration,
+    and the search can still run."""
+    pos = {l.module: i for i, l in enumerate(layers) if l.module}
+    out = []
+    for mid, entry in published.items():
+        info = entry.get("layer") if isinstance(entry.get("layer"), dict) else {}
+        ext = str(info.get("extends") or "").casefold()
+        deps = set(info["depends_on"]) if isinstance(info.get("depends_on"), dict) else set()
+        for d in sorted(({ext} - {""}) | deps):
+            if d in pos and pos[d] > pos[mid]:
+                how = "extends" if d == ext else "depends on (through a declared relation)"
+                out.append(f"{mid} {how} {d}, but the chain lists {d} above it — a chain is lowest first, so {d} is "
+                           f"treated as the more specific layer; list {d} before {mid}")
+    return out
+
+
 def resolve(root: Path, index_dir: Path, rules_cfg: dict, *, campaign: str = None, chain=None) -> Resolution:
     """Resolve one chain selector. `rules_cfg` is the corpus config as cfg_loader.load_cfg returns it (only its
     [rules_layers] section is read). Never raises for a user error: every problem lands in .refusals (the chain
@@ -484,7 +528,7 @@ def resolve(root: Path, index_dir: Path, rules_cfg: dict, *, campaign: str = Non
     problems = {m: entry_problem(e) for m, e in reg["systems"].items()}
     malformed = {m for m, why in problems.items() if why}
     snapshot = {m: e["build_id"] for m, e in reg["systems"].items() if m not in malformed}
-    seen = set()
+    seen, published = set(), {}
     for given in names:
         layer = Layer(given)
         mid = given.casefold()
@@ -531,6 +575,12 @@ def resolve(root: Path, index_dir: Path, rules_cfg: dict, *, campaign: str = Non
         layer.role, layer.build_id, layer.schema = ROLE_INDEXED, info["build_id"], info["schema_version"]
         layer.built_at = str(entry.get("built_at", ""))
         layer.db, layer.kind = str(_db), str((entry.get("layer") or {}).get("kind") or "system")
+        published[mid] = entry
+        if layer.schema == system_index.SCHEMA_LAYERED:
+            why = _layer_tables_problem(sdir, _db, mid)
+            if why:
+                layer.reason = why
+                res.refusals.append(why)
         _freshness(root, layer, entry, known[mid], snapshot, malformed)
         if layer.freshness == "CHANGED":
             res.warnings.append(f"{mid}: SOURCES CHANGED since the build — results may not match the files; rebuild "
@@ -541,6 +591,7 @@ def resolve(root: Path, index_dir: Path, rules_cfg: dict, *, campaign: str = Non
         if ext and ext not in [n.casefold() for n in names]:
             layer.notes.append(f"extends {ext}, which this chain does not include")
         res.warnings += [f"{mid}: {n}" for n in layer.notes]
+    res.warnings += _order_warnings(res.layers, published)
 
     res.token = token_for(res.layers)
     modules = [l.module or l.given.casefold() for l in res.layers]

@@ -23,6 +23,8 @@ Command line arguments:
 #   the rule into system_index.contained_real.
 # changed 2026-11-14: audit batch 1 — mutants for undecodable inputs, immutable generation opens, the connection
 #   closed when its extension fails, and the chain-path catch-all; two open mutants repointed at the new opens.
+# changed 2026-11-15: audit batch 3 — mutants for the chain-order warning, layer tables checked at resolution (and
+#   only through the contained open), and the resolution header on both post-resolution refusals.
 """
 
 import io
@@ -252,6 +254,25 @@ MUTANTS = [
      '    uri = system_index.generation_uri(path) if generation else', '    uri = f"{path.as_uri()}?mode=ro" if 1 else'),
     ("open: a connection leaked when its extension fails", "srv",
      "    except BaseException:\n        conn.close()\n        raise", "    except BaseException:\n        raise"),
+    # ---- status agrees with search (audit batch 3: C1, and the reference's two promises)
+    ("order: no warning for a chain against its extends", "rc",
+     "    res.warnings += _order_warnings(res.layers, published)", "    pass"),
+    ("order: relation dependencies ignored", "rc",
+     '        deps = set(info["depends_on"]) if isinstance(info.get("depends_on"), dict) else set()',
+     "        deps = set()"),
+    ("order: the direction reversed", "rc", "            if d in pos and pos[d] > pos[mid]:",
+     "            if d in pos and pos[d] < pos[mid]:"),
+    ("resolve: layer tables not checked", "rc",
+     "        if layer.schema == system_index.SCHEMA_LAYERED:\n            why = _layer_tables_problem",
+     "        if False:\n            why = _layer_tables_problem"),
+    ("resolve: layer tables opened uncontained", "rc",
+     "    conn, why = system_index.open_contained(Path(db), sdir,",
+     "    conn, why = (lambda p, s, o: (o(Path(p)), None))(Path(db), sdir,"),
+    ("search: a post-resolution refusal without the header", "srv",
+     'search again (index_status shows the new build).",\n                                  ""] + head)',
+     'search again (index_status shows the new build)."])'),
+    ("search: a late layer-table refusal without the header", "srv",
+     'f"[!] Chain search refused — {e}", ""] + head)', 'f"[!] Chain search refused — {e}"])'),
     ("search: no catch-all on the chain path", "srv",
      '        return f"[!] Unexpected error: {e}"\n    finally:\n        for c in conns.values():',
      '        raise\n    finally:\n        for c in conns.values():'),

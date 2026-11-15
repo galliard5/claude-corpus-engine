@@ -35,6 +35,24 @@ while it stays rare.
 
 ---
 
+## 2026-11-15
+
+### Fixed
+
+- **`index_status(campaign=|chain=)` reports a layer with broken relation tables.** It reported such a layer as
+  healthy, while a chain search refused it. The check now happens when the chain is resolved, which both tools
+  share, so the status refuses exactly as the search would.
+- **A chain listed against its own layers is flagged.** With `chain="house,base"`, where `house` extends `base`,
+  `base` was silently treated as the more specific layer: it took the extra result slots, and `house`'s hits read
+  "relation undeclared" directly under their own declarations. Status and search now warn when a layer is listed
+  below a layer it extends or relates to, and say how to reorder. The search still runs.
+- **Every chain-search refusal carries the resolution header.** Two refusals that can only arise after resolution,
+  a layer database that changed meanwhile and layer tables that broke meanwhile, printed a single line. They now
+  carry the full header, as the reference documents.
+
+Server-side, so it reaches chat once the image is rebuilt (`docker compose up -d --build corpus-search` from
+`Python/`). The tool surface is unchanged.
+
 ## 2026-11-14
 
 ### Fixed

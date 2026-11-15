@@ -2,7 +2,7 @@
 name: Corpus Search Server
 type: documentation-component
 keywords: [search, fts5, sqlite, bm25, corpus_meta, corpus_vec, embed_cache, type_filter, missing_filter, category_filter, porter, stemming, search_mcp_server, vector, hybrid, semantic, rrf, sqlite-vec, fastembed, embedding, limit, timeout, query-guard]
-description: Full reference for search_mcp_server.py - FTS5 schema, BM25 weights, the three filters, the corpus_meta hygiene table, the vector/hybrid (RRF) semantic search lane, and per-module game-system databases (system, representation_filter, get_system_record).
+description: Full reference for search_mcp_server.py - FTS5 schema, BM25 weights, the three filters, the corpus_meta hygiene table, the vector/hybrid (RRF) semantic search lane, per-module game-system databases (system, representation_filter, get_system_record), and chain-aware search over a campaign's rules layers (campaign, chain, per_layer, expected_build).
 ---
 
 # Corpus Search Server
@@ -95,8 +95,16 @@ search_corpus(
     type_filter: str | None = None,
     missing_filter: str | None = None,
     show_sections: bool = True,
+    system: str | None = None,                 # one game-system module's database
+    representation_filter: str | None = None,  # with system, campaign or chain
+    campaign: str | None = None,               # a campaign's rules chain ...
+    chain: str | None = None,                  # ... or an explicit one, lowest first
+    per_layer: int | None = None,              # with campaign or chain
 ) -> str
 ```
+
+At most one of `system`, `campaign` and `chain`; with none of them the search runs over the corpus, exactly as
+before those parameters existed. See *Game-system module databases* and *Chain-aware search* below.
 
 All filters compose with AND and apply across every mode. Combine any or all in one call.
 
@@ -180,8 +188,11 @@ For "all files where X is missing" without a content query, you still need a que
 ## The `get_section` tool
 
 ```python
-get_section(path, heading=None, level=2) -> str
+get_section(path, heading=None, level=2, system=None, expected_build=None) -> str
 ```
+
+With `system`, the section comes from that module's database instead of the corpus. `expected_build` (which needs
+`system`) pins the fetch to the build a chain-search hit came from; see *Chain-aware search*.
 
 Returns a single section of an indexed document instead of the whole file. It exists because a search hit on a large reference document used to force a whole-file read to reach one heading: the daily-life toolkit measured during development is ~7,900 tokens, and a typical question wants one ~400-token section of it. Measured end-to-end on a representative query, the search-plus-read round trip went from ~9,400 tokens to ~2,200.
 
@@ -248,17 +259,91 @@ best-effort by later builds. **The server resolves a module only through the reg
 generation on disk is never served, a registry entry naming a file outside `index/systems/` is refused, and a
 database whose own build id, module or schema version disagrees with the registry's is refused.
 
+**Contained at the open, and opened immutable.** Checking the registry entry is not enough, because the file can
+become a link or junction leading out of `index/systems/` between that check and the open. So every reader of a
+published generation (search, fetch, status, chain resolution, and the builder's reads of dependency layers and
+the previous build's embedding cache) goes through `system_index.open_contained`:
+1. resolve the path strictly, following links and junctions, and require it inside `index/systems/`;
+2. open that resolved path;
+3. check it again before reading anything, and close it unread if it has changed.
+
+The open uses `system_index.generation_uri`, which adds `immutable=1` to the read-only URI. A generation is never
+written once published, and SQLite then reads the main file alone, never a `-wal` or `-journal` beside it, so a
+sidecar planted at a generation's name cannot contribute rows. The corpus database is rebuilt in place under one
+name, so it is opened read-only but not immutable.
+
 **Why one database per module, not per campaign.** A campaign may run several module layers (a system and a setting
 built on it). One database per campaign would put layers that override one another into one FTS table, ranked by
-relevance with nothing saying which governs. Per-module databases avoid that; chain-aware search across a
-campaign's layers is specified (a separate `campaign=` parameter, per-database ranking kept, never raw BM25 merged
-across databases) and not yet built.
+relevance with nothing saying which governs. Per-module databases avoid that, and chain-aware search (next section)
+searches a campaign's layers one database at a time, never merging BM25 scores across them.
+
+## Chain-aware search (`campaign`, `chain`)
+
+Added 2026-11-13. `search_corpus(campaign=... | chain=...)` searches a rules chain: an ordered list of module
+layers, lowest first, such as a game system, a variant built on it, and a homebrew layer on top. A layer is a
+module whose manifest declares `kind` and `extends`. A layer whose `relations.yaml` declares how its entries relate
+to other layers' entries (`override`, `extend`, `add`, …) is built as schema 3, with those declarations stored in
+its own `relations` and `layer_info` tables. `index_status(campaign=... | chain=...)` reports the same resolution
+without searching. `file_system_reference.md` documents what the output looks like; this section covers how it
+works.
+
+**Resolution (`rules_chain.resolve`) runs once per call, from one registry read.**
+- **Selecting the chain.** `campaign` names a campaign folder, matched case-insensitively. Its
+  `Campaign_Profile.md` declares the `chain` and may also name an adaptation profile and `homebrew` sidecar files.
+  `chain` gives the layer names directly, and carries neither. A chain holds at most 8 layers.
+- **Each layer's role:**
+  - *indexed:* registered, its publication consistent and its schema readable;
+  - *declared loaded:* listed under `indexer.cfg` `[rules_layers] not_searched`. It is never searched, and nothing
+    can verify the caller has it in context;
+  - *missing:* anything else, which refuses the chain.
+- **Indexed layers get further checks.** A schema-3 layer's relation tables are read and validated at this stage,
+  so status and search refuse a broken one alike. Source freshness is recomputed from the module's files, as
+  `index_status(system=)` does.
+- **The snapshot token** is a SHA-256 over each indexed layer and its build id, so two calls can be compared.
+
+**Refusals and warnings.** A refusal means nothing is searched; a warning is printed and the search runs.
+- **Refusals:**
+  - an unknown, unbuilt, duplicated or ambiguous layer;
+  - a broken publication;
+  - a layer both registered and declared not searched;
+  - a schema-3 layer whose relation tables cannot be read;
+  - an unreadable campaign profile;
+  - a database that changed after resolution.
+- **Warnings:**
+  - changed or unknown source freshness;
+  - a layer validated against an older build of its dependency;
+  - a layer that extends something outside the chain;
+  - a chain that lists a layer below one it extends or relates to. Because a chain is lowest first, the search
+    would otherwise treat that lower layer as the more specific one. It is a warning, not a refusal, because the
+    order is the user's declaration.
+- **Retrieval is labelled non-authoritative** unless the adaptation inputs are current: a campaign's adaptation
+  profile pins the files it was built against by hash. An explicit chain of more than one module has no profile, so
+  it is always non-authoritative.
+
+**The search (`_chain_search`).** Every indexed layer's generation is opened from the snapshot before any query
+runs, contained at the open as above. Each is checked to still be the build the snapshot named; if one is not, the
+whole search refuses with "search again" and the full resolution header. Each layer is then queried in its own
+database, with its own ranking, most specific first. One timeout guard covers the whole chain.
+- **Bounds.** `limit` (default 10, at most 200) is the total cap. `per_layer` (default `min(5, limit)`) caps each
+  layer. Every layer with a hit gets one slot, and the rest go most specific first. If `limit` is below the number
+  of layers with hits, the search refuses and names the smallest limit that would work.
+- **No cross-layer scores.** Scores from different databases are not comparable, so none are shown; each hit
+  carries its rank within its layer.
+- **Vector fallback is per layer.** A layer without a vector table falls back to FTS, and the header says so for
+  that layer.
+- **Relations are reported as declared, never inferred.** Each hit lists the declarations the chain's layers make
+  about it, with each declaration's status and whether its target has changed since it was pinned. Declarations
+  whose target lies outside the chain are counted, not listed. A hit nothing names says "no override recorded",
+  which is not a claim that it governs.
+- **The fetch is pinned.** Each hit ends with a `Fetch:` line, `get_section(...)` or `get_system_record(...)` with
+  `expected_build`. That fetch serves only from that build and refuses once the module has been rebuilt. It checks
+  both the registry and the open connection.
 
 ## The `get_system_record` tool
 
 ```python
 get_system_record(system: str, entry_key: str | None = None, dataset: str | None = None,
-                  record_id: str | None = None) -> str
+                  record_id: str | None = None, expected_build: str | None = None) -> str
 ```
 
 Returns one dataset record as pretty JSON under a provenance header: every field, and its whole `source` object
@@ -269,8 +354,11 @@ it exactly, so a statistic is never reconstructed from a snippet.
 ## The `index_status` tool
 
 ```python
-index_status(system: str | None = None) -> str
+index_status(system: str | None = None, campaign: str | None = None, chain: str | None = None) -> str
 ```
+
+At most one of the three. **With `campaign` or `chain`**, it reports how that rules chain resolves, exactly as a
+chain search would, including every reason a search would refuse, and searches nothing (see *Chain-aware search*).
 
 Returns the DB path, total file count, **vector-lane status** (vector count + model, or "not built"), and last-built timestamp. Use to verify freshness — and whether semantic/hybrid search is available — before relying on results. It also lists the registered module databases.
 
@@ -321,7 +409,8 @@ Each result includes:
 
 ## Security posture
 
-- DB opened **read-only** via SQLite URI (`?mode=ro`). The server cannot write to the database.
+- DB opened **read-only** via SQLite URI (`?mode=ro`). The server cannot write to the database. Module generations
+  are opened `immutable` as well, so no sidecar file beside one is ever read.
 - All user input passed via SQLite parameter binding (`?` placeholders). No string concatenation, no SQL injection surface.
 - **No filesystem access.** The DB path is hardcoded and the server opens no files. `get_section` takes a `path`, but it is an index key, not a filesystem path: it is matched for equality against `corpus_fts.path` and the body is served from the stored `content` column. A path not in the index returns "not in the index" (with near-miss suggestions on the basename), so traversal sequences, absolute paths, and anything outside the corpus are unreachable by construction rather than by filtering. `level` is whitelisted to 1–6.
 - `missing_filter` is whitelisted server-side against `{"name", "keywords", "description", "type"}`. Any other value is rejected before touching SQL.
@@ -332,8 +421,13 @@ Each result includes:
   reads the module's `index.cfg` and the files it declares — all inside the read-only corpus mount. The config is
   found by searching `Game_Systems/*/index.cfg` for the module id and confined to that tree; **the registry's
   recorded cfg path is never followed**, so a tampered registry cannot point this read anywhere else. The strict
-  loader then confines every declared input to the module's directory. Nothing else in this server reads outside
-  the index databases and the build history.
+  loader then confines every declared input to the module's directory.
+- **Chain resolution reads more, all inside the corpus.** It reads `indexer.cfg`'s `[rules_layers]` section, the
+  manifests under `Game_Systems/` and the private roots (to know the modules), the named campaign's
+  `Campaign_Profile.md`, its adaptation profile, and its declared sidecars (hashed, never searched). A profile or
+  declared path that resolves outside the corpus, through `..`, an absolute path or a link, is refused unread. A
+  file that is not valid UTF-8 is refused, not raised. Nothing else in this server reads outside the index databases
+  and the build history.
 - Hybrid search restricted to dataset records goes straight to the lexical lane without embedding the query, so a
   broken model cannot defeat a result that never needed it.
 - `mode` is whitelisted against `{"fts", "vector", "hybrid"}`. The sqlite-vec extension is loaded only when a vector/hybrid query needs it, with `enable_load_extension` toggled back off immediately after the load. Embedding runs in-process (local model, no network at query time); the vector lane adds no new external surface.

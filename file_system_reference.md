@@ -270,9 +270,11 @@ names is opened and checked to still be that build before any query runs.
   slot before any layer gets a second. When `limit` is smaller than the number of layers with hits, the search
   refuses and names the smallest `limit` that covers them all.
 - **Refusals search nothing.** A chain that cannot be searched as declared refuses with the full resolution
-  header: an unknown or unbuilt layer, a broken publication, a layer both registered and declared not searched, or a
-  layer database that changed or was rebuilt after the chain resolved ("search again"). Stale sources are a warning,
-  not a refusal. `mode="vector"`/`"hybrid"` falls back to `fts` per layer, saying so, when a layer has no vector
+  header: an unknown or unbuilt layer, a broken publication, a layered layer whose relation tables cannot be read, a
+  layer both registered and declared not searched, or a layer database that changed or was rebuilt after the chain
+  resolved ("search again"). Stale sources are a warning, not a refusal, and so is a chain listed against its own
+  layers: one that puts a layer below the layer it extends or relates to, which the search would otherwise treat as
+  the more specific of the two. `mode="vector"`/`"hybrid"` falls back to `fts` per layer, saying so, when a layer has no vector
   table.
 **Modes:**
 - `"fts"` *(default)* — full-text BM25; exact terms, FTS5 syntax below. Unchanged legacy behaviour.

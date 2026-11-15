@@ -101,6 +101,10 @@ changed 2026-11-14: audit batch 1 (Working_Documents/Chain_Search_Audit_Fable.md
   closed before the error propagates; chain search gains the single-system path's catch-all, so
   an embedding failure or a non-operational DatabaseError comes back as "[!] Unexpected error".
 
+changed 2026-11-15: audit batch 3 — the two chain-search refusals that can only arise after
+  resolution (a snapshot database changed; layer tables broke) carry the full resolution header.
+  Resolution itself now refuses unreadable layer tables, so status reports them too.
+
 changed 2026-09-25: records with no source of their own but row references
     (see system_index.py) show "Source (via row reference): <file> #<anchors> —
     row line(s) N  (<index record>)", one line per table on get_system_record and
@@ -1245,7 +1249,8 @@ def _chain_search(query, limit, per_layer, mode, category_filter, type_filter, m
                 return "\n".join([f"No search was run for: {query}", "",
                                   f"[!] Chain search refused — the database the snapshot named for {l.module} "
                                   f"(build {l.build_id}) changed after the chain was resolved: {why}. The layer was "
-                                  f"rebuilt or removed meanwhile; search again (index_status shows the new build)."])
+                                  f"rebuilt or removed meanwhile; search again (index_status shows the new build).",
+                                  ""] + head)
             conn.set_progress_handler(guard, _PROGRESS_STEPS)
         declarations = []
         for l in searched:                                                         # chain order
@@ -1341,7 +1346,9 @@ def _chain_search(query, limit, per_layer, mode, category_filter, type_filter, m
                     f"pathological query, not a normal search. If this trips on legitimate use, raise "
                     f"_QUERY_TIMEOUT_S in {Path(__file__).name}.")
         if isinstance(e, system_index.SystemIndexError):
-            return "\n".join([f"No search was run for: {query}", "", f"[!] Chain search refused — {e}"])
+            # Resolution already refuses unreadable layer tables (so index_status reports them too); reaching this
+            # means the tables broke between resolving the chain and reading them. The header still comes with it.
+            return "\n".join([f"No search was run for: {query}", "", f"[!] Chain search refused — {e}", ""] + head)
         return (f"[!] Search error: {e}\n\n"
                 "Hint: FTS5 has special syntax. Wrap problematic terms in double "
                 'quotes (e.g. "Kestrel\'s") or use prefix matching (Kestrel*).')

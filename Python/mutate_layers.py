@@ -24,6 +24,10 @@ Command line arguments:
 #   opens of a published generation made unchecked, and system_index.open_contained without its re-check once open.
 # changed 2026-11-13: three mutants for the embedding-cache ATTACH (Codex 967): attached unchecked, not re-checked
 #   once attached, and a refusal left out of the build's errors.
+# changed 2026-11-14: eight mutants for --all-systems safety (audit batch 2): pruning a published dependent's
+#   dependency, held only one level deep, the empty-discovery wipe, both new failures unreported, the first claimant
+#   taken, and the published-cycle check off or not following dependencies. The private-roots prune mutant follows
+#   the prune into its new set.
 """
 
 import io
@@ -180,8 +184,8 @@ MUTANTS = [
      '                "schema_version": system_index.SCHEMA_VERSION,'),
     ("build: --all-systems unordered", "bi", "        targets, more = _ordered_targets(targets)", "        more = 0"),
     ("build: prune ignores private roots", "bi",
-     '        gone = [m for m in reg["systems"] if not system_index.cfgs_for(root, m, private_roots)]',
-     '        gone = [m for m in reg["systems"] if not system_index.cfgs_for(root, m)]'),
+     '        unclaimed = {m for m in reg["systems"] if not system_index.cfgs_for(root, m, private_roots)}',
+     '        unclaimed = {m for m in reg["systems"] if not system_index.cfgs_for(root, m)}'),
     # ---- containment at the builder's opens (Codex 965)
     ("builder open: the dependency snapshot opens unchecked", "bi",
      "            conn, why = system_index.open_contained(path, sdir, _open_published_ro)\n"
@@ -205,6 +209,26 @@ MUTANTS = [
      "        if system_index.contained_real(live_db, sdir)[0] != real:", "        " + OFF),
     ("embed cache: a refusal not reported", "bi",
      "        if refused:                         # not fatal", "        if False:                           # not fatal"),
+    # ---- --all-systems safety (audit batch 2, Working_Documents/Chain_Search_Audit_Fable.md B1, B2, B4, B5)
+    ("prune: a published dependent's dependency unregistered", "bi",
+     "            if not keep:\n                break", "            if True:\n                break"),
+    ("prune: held followed one level only", "bi",
+     "            gone -= keep\n", "            gone -= keep\n            break\n"),
+    ("prune: a held module not reported as a failure", "bi",
+     "        for module, dependents in held.items():\n            failures += 1",
+     "        for module, dependents in held.items():\n            failures += 0"),
+    ("prune: an empty discovery wipes the registry", "bi",
+     '        if reg["systems"] and not system_index.discover(root, private_roots):', "        " + OFF),
+    ("prune: a refusal not reported as a failure", "bi",
+     "        if refused:\n            failures += 1", "        if refused:\n            failures += 0"),
+    ("claims: --all-systems takes the first claimant", "bi",
+     "                found = system_index.find_cfg(root, module, private_roots)",
+     "                found = paths[0] if len(paths) == 1 else system_index.find_cfg(root, module, private_roots)"),
+    ("cycle: --system ignores the published builds", "bi",
+     "    cycle = _published_cycle(cfg.module, cfg.dependencies(), reg)", "    cycle = None"),
+    ("cycle: published dependencies not followed", "bi",
+     "        stack += [(d, path + [d]) for d in sorted(_published_deps(reg[\"systems\"].get(m)), reverse=True)]",
+     "        pass"),
 ]
 
 # Mutants that CANNOT be killed: none are claimed. Every survivor fails the run and is reported.

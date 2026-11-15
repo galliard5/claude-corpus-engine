@@ -77,6 +77,10 @@ Replaces: build_directory_indexes.py + build_search_index.py
 #   refusal. A refusal is reported in the build's errors and the build embeds every document afresh.
 # changed 2026-11-14: published generations are opened and attached immutable (system_index.generation_uri), so a
 #   sidecar file beside one is never read (audit batch 1, Working_Documents/Chain_Search_Audit_Fable.md N2).
+# changed 2026-11-14: --all-systems safety (audit batch 2, B1/B2/B4/B5). prune_registry returns (unregistered, held,
+#   refused): it holds a module a published dependent still needs, and prunes nothing on an empty discovery, both
+#   reported as failures. --all-systems claims each module through find_cfg, as --system does. _dependency_snapshot
+#   refuses a cycle through the published builds (_published_cycle).
 
 Usage:
     python build_indexes.py                   # reads indexer.cfg, writes all outputs
@@ -1243,9 +1247,43 @@ def _dependency_snapshot(cfg: "system_index.SystemCfg", sdir: Path, reg: dict) -
             continue
         depends_on[layer] = entry["build_id"]
         dbs[layer] = path
+    cycle = _published_cycle(cfg.module, cfg.dependencies(), reg)
+    if cycle:
+        keeper = cycle[-2] if len(cycle) > 1 else cfg.module
+        problems.append(f"dependency cycle through the published builds: {' -> '.join([cfg.module] + cycle)} — a "
+                        f"layer may not extend or relate to a layer that depends on it; drop that declaration, or "
+                        f"first rebuild {keeper} without its dependency on {cfg.module}")
     if problems:
         raise system_index.SystemIndexError(f"{cfg.module}: " + "; ".join(problems))
     return depends_on, dbs
+
+
+def _published_deps(entry) -> set:
+    """The layers a registry entry's published build depends on (layer.depends_on); empty for a legacy module or a
+    malformed entry."""
+    layer = entry.get("layer") if isinstance(entry, dict) else None
+    deps = layer.get("depends_on") if isinstance(layer, dict) else None
+    return set(deps) if isinstance(deps, dict) else set()
+
+
+def _published_cycle(module: str, deps, reg: dict):
+    """The path [dep, ..., module] by which one of `deps` leads back to `module` through registered builds, each
+    depending (as published) on the next; None when there is none.
+
+    WHY (audit B4, 2026-11-14). --all-systems refuses a cycle from the configs (dependency_order), but a --system
+    build sees only its own config. Without this, hb extending basesys and basesys then gaining a relation to hb
+    published both ways round with exit 0, each rebuild leaving the other 'validated against an older build', and
+    --all-systems afterwards refused both while both stayed served."""
+    seen, stack = set(), [(d, [d]) for d in sorted(deps, reverse=True)]
+    while stack:
+        m, path = stack.pop()
+        if m == module:
+            return path
+        if m in seen:
+            continue
+        seen.add(m)
+        stack += [(d, path + [d]) for d in sorted(_published_deps(reg["systems"].get(m)), reverse=True)]
+    return None
 
 
 def build_and_publish(root: Path, index_dir: Path, cfg_path: Path, build_vectors: bool) -> SystemBuild:
@@ -1346,16 +1384,37 @@ def _registry_names(sdir: Path, module: str, build_id: str, db_name: str) -> boo
     return isinstance(entry, dict) and entry.get("build_id") == build_id and entry.get("db") == db_name
 
 
-def prune_registry(root: Path, index_dir: Path, private_roots: tuple = ()) -> list:
-    """Drop registry entries whose module no index.cfg claims any more, then collect their generations. The
-    registry's own cfg path is not trusted for this: only the Game_Systems tree and the declared private roots
-    decide what exists."""
+def prune_registry(root: Path, index_dir: Path, private_roots: tuple = ()) -> tuple:
+    """(unregistered, held, refused). Drop registry entries whose module no index.cfg claims any more, then collect
+    their generations. The registry's own cfg path is not trusted for this: only the Game_Systems tree and the
+    declared private roots decide what exists.
+
+    Two guards (audit B1 and B2, 2026-11-14):
+    - HELD. A module whose index.cfg is gone stays registered while a module that stays registered depends on it
+      (layer.depends_on as published, followed transitively). Unregistering it deleted its generation and left the
+      dependent naming a build that no longer exists, with exit 0. `held` maps each such module to its dependents.
+    - REFUSED. When discovery finds no index.cfg at all but the registry is not empty, nothing is unregistered. A
+      missing, renamed or containment-refused Game_Systems tree is far likelier than every module going at once,
+      and pruning would delete every generation along with its embedding cache. `refused` says why; to retire every
+      module on purpose, delete index/systems/registry.json by hand."""
     sdir = system_index.systems_dir(index_dir)
     if not (sdir / system_index.REGISTRY).exists():
-        return []
+        return [], {}, None
     with system_index.registry_lock(sdir):
         reg = system_index.read_registry(sdir)
-        gone = [m for m in reg["systems"] if not system_index.cfgs_for(root, m, private_roots)]
+        if reg["systems"] and not system_index.discover(root, private_roots):
+            return [], {}, (f"no index.cfg was found under Game_Systems or the private roots, but "
+                            f"{len(reg['systems'])} module(s) are registered, so nothing was unregistered. If every "
+                            f"module really was removed, delete index/systems/{system_index.REGISTRY} by hand")
+        unclaimed = {m for m in reg["systems"] if not system_index.cfgs_for(root, m, private_roots)}
+        gone = set(unclaimed)
+        while True:
+            keep = {d for m, e in reg["systems"].items() if m not in gone for d in _published_deps(e) & gone}
+            if not keep:
+                break
+            gone -= keep
+        held = {d: sorted(m for m, e in reg["systems"].items() if m not in gone and d in _published_deps(e))
+                for d in sorted(unclaimed - gone)}
         for m in gone:
             del reg["systems"][m]
         if gone:
@@ -1364,7 +1423,7 @@ def prune_registry(root: Path, index_dir: Path, private_roots: tuple = ()) -> li
             system_index.collect_garbage(sdir, reg)
         except Exception:
             pass
-    return gone
+    return sorted(gone), held, None
 
 
 def _ordered_targets(paths: list) -> tuple:
@@ -1395,17 +1454,29 @@ def run_systems(args, root: Path, index_dir: Path, private_roots: tuple = ()) ->
     discovered module (Game_Systems and the private roots) in dependency order."""
     failures = 0
     if args.all_systems:
+        # Each discovered index.cfg builds the module it declares (or its folder's name), and only when --system for
+        # that module would pick this same file: find_cfg is the one claim rule, the one known_modules and chain
+        # resolution follow too. A module claimed twice — by declaration, or by a folder named like it while another
+        # index.cfg declares it — refuses here exactly as --system refuses it (audit B5: --all-systems used to
+        # publish such a module, which chain resolution then called ambiguous and never reached).
         targets = []
         claims = {}
         for cfg_path in system_index.discover(root, private_roots):
             claims.setdefault(system_index.declared_module(cfg_path) or cfg_path.parent.name.lower(), []).append(cfg_path)
         for module, paths in sorted(claims.items()):
-            if len(paths) > 1:
+            try:
+                found = system_index.find_cfg(root, module, private_roots)
+            except system_index.SystemIndexError as e:
                 failures += 1
-                print(f"\n[!] FAILED — nothing published for {module!r}: declared by more than one index.cfg: "
-                      + ", ".join(f"{p.parent.name}/{p.name}" for p in paths))
+                print(f"\n[!] FAILED — nothing published for {module!r}: {e}")
+                continue
+            if found is not None and paths == [found]:
+                targets.append(found)
             else:
-                targets.append(paths[0])
+                failures += 1
+                print(f"\n[!] FAILED — nothing published for {module!r}: --system {module} would build "
+                      f"{found.parent.name + '/' + found.name if found else 'nothing'}, not "
+                      + ", ".join(f"{p.parent.name}/{p.name}" for p in paths))
         if not claims:
             print(f"No Game_Systems/*/index.cfg (or private-root layer) under {root}.")
         targets, more = _ordered_targets(targets)
@@ -1468,9 +1539,18 @@ def run_systems(args, root: Path, index_dir: Path, private_roots: tuple = ()) ->
                     "vector_failed": s.vector_failed, "error_count": len(s.errors),
                     "invocation": _detect_invocation()})
     if args.all_systems:
-        gone = prune_registry(root, index_dir, private_roots)
+        gone, held, refused = prune_registry(root, index_dir, private_roots)
+        if refused:
+            failures += 1
+            print(f"\n[!] Not pruned: {refused}.")
         if gone:
             print(f"\nUnregistered (index.cfg removed): {', '.join(gone)}")
+        for module, dependents in held.items():
+            failures += 1
+            print(f"\n[!] Still registered: {module} — its index.cfg is gone, but {', '.join(dependents)} "
+                  f"depend{'s' if len(dependents) == 1 else ''} on it as published. Rebuild "
+                  f"{'that' if len(dependents) == 1 else 'those'} without it (or restore its index.cfg), then run "
+                  f"--all-systems again.")
     return 1 if failures else 0
 
 

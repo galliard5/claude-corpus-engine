@@ -53,6 +53,22 @@ while it stays rare.
   never a `-wal` or `-journal` file beside it, which the containment check did not cover. The corpus database is
   opened as before.
 
+- **`--all-systems` no longer strands a layer by pruning what it depends on.** A module whose `index.cfg` is gone
+  used to be unregistered, and its database deleted, even while another registered layer depended on it. That
+  layer then named a build that no longer existed, and the run still exited 0. Now the module stays registered
+  while anything published depends on it. The run says which layers keep it, and exits 1, until they are rebuilt
+  without it.
+- **`--all-systems` with no module found unregisters nothing.** If `Game_Systems` and the private roots yield no
+  `index.cfg` at all while modules are registered, as with a moved or renamed folder, the run used to unregister
+  every module and delete every database and embedding cache. It now refuses with exit 1 and changes nothing. To
+  retire every module on purpose, delete `index/systems/registry.json` by hand.
+- **`--all-systems` claims a module the way `--system` does.** A module claimed by two `index.cfg` files, one
+  declaring it and one sitting in a folder of that name, was published by `--all-systems` but refused by `--system`
+  and by chain resolution. Both builders now refuse it.
+- **A `--system` build refuses a dependency cycle through the published builds.** A layer could relate back to a
+  layer whose published build depends on it, and each build in turn succeeded. Only `--all-systems` caught the
+  cycle, after both were already published. The build now refuses and names the cycle.
+
 These reach chat once the images are rebuilt (`docker compose up -d --build corpus-search index-tools` from
 `Python/`), since both servers and the builder they run are copied into the image. The tool surface is unchanged,
 so Claude Desktop needs no restart.

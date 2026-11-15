@@ -35,6 +35,10 @@ THE CONTRACTS THESE TESTS PIN (design: Working_Documents/Chain_Search_Design_Pro
                   contained the same way: never attached when redirected, detached unread when redirected during the
                   attach, the refusal reported in the build's errors; a contained warm cache is still reused, and an
                   unavailable one still falls back quietly (Codex 967).
+  Pruning         --all-systems keeps a module whose index.cfg is gone registered while a published dependent needs
+                  it (transitively), says so and exits 1; it unregisters nothing when discovery finds no index.cfg
+                  but the registry is not empty. It claims a module exactly as --system does (find_cfg), and a
+                  --system build refuses a dependency cycle through the published builds (audit batch 2).
 
 Usage:
     python -m unittest test_layers -v
@@ -51,10 +55,12 @@ Command line arguments:
 # changed 2026-11-13: TestBuilderContainment (Codex 965): a redirect after resolution and during the open, at each of
 #   the builder's three opens of a published generation, through both the build and the relations report.
 # changed 2026-11-13: TestEmbedCacheContainment (Codex 967): the embedding-cache ATTACH, on Codex's recipe.
+# changed 2026-11-14: TestAllSystemsSafety (audit batch 2); prune_registry now returns (unregistered, held, refused).
 """
 
 import argparse
 import hashlib
+import io
 import json
 import re
 import shutil
@@ -382,9 +388,9 @@ class TestDiscovery(Tmp):
     def test_prune_keeps_private_layers(self):
         self.build(make_base(self.root))
         self.build(make_layer(self.root))
-        self.assertEqual(bi.prune_registry(self.root, self.index, (PRIVATE,)), [])
+        self.assertEqual(bi.prune_registry(self.root, self.index, (PRIVATE,)), ([], {}, None))
         self.assertEqual(set(self.registry()["systems"]), {"basesys", "hb"})
-        self.assertEqual(bi.prune_registry(self.root, self.index, ()), ["hb"])   # undeclared root: gone
+        self.assertEqual(bi.prune_registry(self.root, self.index, ()), (["hb"], {}, None))   # undeclared root: gone
 
 
 # ================================================================ manifests: legacy defaults and the layer fields
@@ -1016,6 +1022,96 @@ class TestOrder(Tmp):
 
 
 # ================================================================ the real legacy module, read-only
+
+class TestAllSystemsSafety(Tmp):
+    """Audit batch 2 (Working_Documents/Chain_Search_Audit_Fable.md B1, B2, B4, B5): pruning never strands a published
+    dependent and never wipes the registry on an empty discovery; --all-systems claims a module exactly as --system
+    does; a --system build refuses a dependency cycle through the published builds."""
+
+    ALL = mock.Mock(all_systems=True, system=None, no_vectors=True)
+    BACK_TO_HB = ('- entry: {key: "doc:rules/core.md"}\n'
+                  '  target: {layer: hb, key: "doc:notes/house.md"}\n'
+                  '  mode: add\n  status: open\n')
+
+    def run_all(self):
+        out = io.StringIO()
+        with mock.patch("sys.stdout", out):
+            code = bi.run_systems(self.ALL, self.root, self.index, (PRIVATE,))
+        return code, out.getvalue()
+
+    def test_a_dependency_stays_registered_while_a_published_dependent_needs_it(self):
+        base = make_base(self.root)
+        self.build(base)
+        hb = self.build(make_layer(self.root, relations=relation()))
+        self.build(make_base(self.root, dirname="Other", module="other"))
+        base.unlink()
+        code, out = self.run_all()
+        self.assertEqual(code, 1)
+        self.assertIn("Still registered: basesys — its index.cfg is gone, but hb depends on it", out)
+        reg = self.registry()["systems"]
+        self.assertEqual(set(reg), {"basesys", "hb", "other"})
+        self.assertEqual(reg["hb"]["layer"]["depends_on"], {"basesys": reg["basesys"]["build_id"]})
+        self.assertTrue(self.db("basesys").exists())                     # the build hb names still exists
+        self.assertNotEqual(reg["hb"]["build_id"], hb.build_id)          # hb was rebuilt, against that build
+        (hb_cfg := self.root / PRIVATE / "Hb" / "index.cfg").unlink()
+        self.assertFalse(hb_cfg.exists())
+        code, out = self.run_all()                                       # the dependent goes too: both unregister
+        self.assertEqual(code, 0)
+        self.assertIn("Unregistered (index.cfg removed): basesys, hb", out)
+        self.assertEqual(set(self.registry()["systems"]), {"other"})
+        self.assertEqual([g for g in self.generations() if not g.startswith("other.")], [])
+
+    def test_held_follows_dependencies_transitively(self):
+        base = make_base(self.root)
+        self.build(base)
+        hb = make_layer(self.root, relations=relation())
+        self.build(hb)
+        self.build(make_layer(self.root, module="aa2", dirname="Aa2", kind="homebrew", extends="hb"))
+        base.unlink()
+        hb.unlink()
+        gone, held, refused = bi.prune_registry(self.root, self.index, (PRIVATE,))
+        self.assertEqual((gone, held, refused), ([], {"basesys": ["hb"], "hb": ["aa2"]}, None))
+        self.assertEqual(set(self.registry()["systems"]), {"basesys", "hb", "aa2"})
+
+    def test_an_empty_discovery_unregisters_nothing(self):
+        self.build(make_base(self.root))
+        self.build(make_layer(self.root, relations=relation()))
+        before, gens = self.registry_bytes(), self.generations()
+        shutil.move(self.root / "Game_Systems", self.root / "Game_Systems_moved")
+        shutil.move(self.root / PRIVATE, self.root / "private_moved")
+        code, out = self.run_all()
+        self.assertEqual(code, 1)
+        self.assertIn("[!] Not pruned: no index.cfg was found under Game_Systems or the private roots, but 2 "
+                      "module(s) are registered", out)
+        self.assertEqual((self.registry_bytes(), self.generations()), (before, gens))
+
+    def test_all_systems_claims_a_module_exactly_as_system_does(self):
+        make_base(self.root, dirname="Foo", module="bar")                # Foo/ declares bar
+        make_base(self.root, dirname="Bar", module="baz")                # Bar/ (a folder named bar) declares baz
+        code, out = self.run_all()
+        self.assertEqual(code, 1)
+        self.assertIn("nothing published for 'bar': module 'bar' is declared by more than one index.cfg", out)
+        self.assertEqual(set(self.registry()["systems"]), {"baz"})
+        known, ambiguous = si.known_modules(self.root, (PRIVATE,))
+        self.assertEqual((set(known), ambiguous), ({"baz"}, {"bar"}))
+        one = mock.Mock(all_systems=False, system="bar", no_vectors=True)
+        with mock.patch("builtins.print"):
+            self.assertEqual(bi.run_systems(one, self.root, self.index, (PRIVATE,)), 1)
+
+    def test_system_refuses_a_cycle_through_the_published_builds(self):
+        base = make_base(self.root)
+        self.build(base)
+        self.build(make_layer(self.root, relations=relation()))          # hb extends basesys, as published
+        write(base.parent / "basesys.md", manifest("basesys", kind="system"))
+        write(base.parent / si.RELATIONS_FILE, self.BACK_TO_HB)          # basesys now relates back to hb
+        before, gens = self.registry_bytes(), self.generations()
+        with self.assertRaisesRegex(si.SystemIndexError, "dependency cycle through the published builds: "
+                                                         "basesys -> hb -> basesys"):
+            self.build(base)
+        self.assertEqual((self.registry_bytes(), self.generations()), (before, gens))
+        (base.parent / si.RELATIONS_FILE).unlink()                       # without the relation it builds
+        self.assertEqual(self.build(base).module, "basesys")
+
 
 class TestRealLegacyModule(unittest.TestCase):
     """The real Eclipse Phase module validates unchanged as a legacy module, and its live published fingerprint

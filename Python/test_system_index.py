@@ -319,6 +319,12 @@ def make_module(root, dirname, module, records, full=True, row_refs=None):
 
 def make_fixture(root):
     write(root / "World" / "Lore_Note.md", LORE)
+    # The copied indexer.cfg is the shipped one, which declares [rules_layers] not_searched = baseline, and that
+    # section is strict: a not_searched id that no folder claims fails every build. The engine always ships
+    # Game_Systems/Baseline/, so the fixture carries a manifest-only base folder as well (changed 2026-11-16). A
+    # legacy folder is a module only when its manifest holds a fenced YAML block (known_modules).
+    write(root / "Game_Systems" / "Baseline" / "baseline.md",
+          "# Baseline\n\nThe base rules layer: loaded, not searched.\n\n```yaml\nresolution:\n  state: defined\n```\n")
     # Othersys declares no row_refs, so its source-less record is simply unsourced, as before row references.
     make_module(root, "Othersys", OTHER, OTHER_RECORDS, full=False)
     return make_module(root, "Testsys", MODULE, RECORDS + TABLE_RECORDS, row_refs=ROW_REFS)

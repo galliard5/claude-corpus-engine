@@ -148,7 +148,9 @@ not_searched = basesys
   and not overlap another root. An existing root may hold only rules-layer folders, so a tree of lore cannot be
   hidden by mistake. A root that does not exist yet is allowed.
 - `not_searched` — comma-separated module ids that are *declared loaded*: a chain may name them, but they are never
-  searched, and nothing can verify that the caller really has them in context. Each must be a known module.
+  searched, and nothing can verify that the caller really has them in context. Each must be a known module. The
+  shipped `indexer.cfg` declares `not_searched = baseline`, since every campaign chain starts from that base layer
+  and it is loaded at startup rather than searched.
 - No section means neither, and every output is exactly what it was before layers existed. A section that is
   present is strict: an unknown key, a line that is not `key = value`, an empty value, or a section declaring
   neither key fails every build (exit 1) and makes every chain search and chain status refuse, naming the fix.

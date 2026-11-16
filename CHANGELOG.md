@@ -35,6 +35,19 @@ while it stays rare.
 
 ---
 
+## 2026-11-16
+
+### Changed
+
+- **The shipped `indexer.cfg` declares `baseline` as loaded, not searched.** A new `[rules_layers]` section sets
+  `not_searched = baseline`. Before it, every campaign chain naming `baseline` (the base layer every chain starts
+  from) refused with "not built and not declared not_searched", so `search_corpus(campaign=…)` and
+  `index_status(campaign=…)` worked for no campaign. They now resolve, with `baseline` reported as declared
+  loaded. The base system is read at startup as a whole, so it is declared rather than given a database. The
+  section is strict: if you have removed or renamed `Game_Systems/Baseline/`, every build and chain call now
+  fails naming the problem; remove the line or point it at your base module. Nothing to rebuild: the search
+  server reads the config on each call.
+
 ## 2026-11-15
 
 ### Fixed

@@ -31,6 +31,9 @@ Command line arguments:
 # changed 2026-11-15: 23 mutants for audit batch 4: the lock (dead owner, host, stale threshold, break and release
 #   by token, sharing violations), the registry replace retry, pid liveness, the temp sweep, an extends parent
 #   loaded by declaration (B8), and the systems directory anchored to the corpus (N1).
+# changed 2026-11-15: eight mutants for B2's folder variant: an unreachable module pruned anyway or not reported, each
+#   of the three containment judgements off, a dangling link taken for absent, any recorded folder counted, and
+#   --system's reason dropped.
 """
 
 import io
@@ -302,6 +305,24 @@ MUTANTS = [
     ('anchor: the relations report does not anchor', 'bi',
      '    reg = system_index.read_registry(sdir, root)\n    entry = reg["systems"].get(module)',
      '    reg = system_index.read_registry(sdir)\n    entry = reg["systems"].get(module)'),
+    # ---- B2's folder variant (2026-11-15): a folder that became a link is refused, not absent
+    ("unreachable: pruned anyway", "bi",
+     "        unclaimed -= set(unreachable)", "        unclaimed -= set()"),
+    ("unreachable: not reported as a failure", "bi",
+     "        for module, why in unreachable.items():\n            failures += 1",
+     "        for module, why in unreachable.items():\n            failures += 0"),
+    ("unreachable: a discovery root leading out not judged", "si",
+     "        if os.path.lexists(base) and not _inside(base, root):", "        " + OFF),
+    ("unreachable: a folder leading out not judged", "si",
+     "        if not _inside(folder, base):", "        " + OFF),
+    ("unreachable: an index.cfg leading out not judged", "si",
+     "        if os.path.lexists(cfg) and not _inside(cfg, folder):", "        " + OFF),
+    ("unreachable: a dangling link taken for absent", "si",
+     "        if not os.path.lexists(folder):", "        if not folder.exists():"),
+    ("unreachable: any recorded folder counts", "si",
+     "        if folder.parent != base:\n            continue", "        if False:\n            continue"),
+    ("unreachable: --system drops the reason", "bi",
+     "            why = _unreachable_registered(root, index_dir, name, private_roots)", "            why = None"),
 ]
 
 # Mutants that CANNOT be killed: none are claimed. Every survivor fails the run and is reported.

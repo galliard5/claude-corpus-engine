@@ -66,6 +66,8 @@ Command line arguments:
 # changed 2026-11-13: TestEmbedCacheContainment (Codex 967): the embedding-cache ATTACH, on Codex's recipe.
 # changed 2026-11-14: TestAllSystemsSafety (audit batch 2); prune_registry now returns (unregistered, held, refused).
 # changed 2026-11-15: TestLockAndTempHygiene, TestLoadedParent and TestSystemsDirAnchor (audit batch 4).
+# changed 2026-11-15: eight TestAllSystemsSafety tests for B2's folder variant; prune_registry now returns
+#   (unregistered, held, refused, unreachable).
 """
 
 import argparse
@@ -401,9 +403,9 @@ class TestDiscovery(Tmp):
     def test_prune_keeps_private_layers(self):
         self.build(make_base(self.root))
         self.build(make_layer(self.root))
-        self.assertEqual(bi.prune_registry(self.root, self.index, (PRIVATE,)), ([], {}, None))
+        self.assertEqual(bi.prune_registry(self.root, self.index, (PRIVATE,)), ([], {}, None, {}))
         self.assertEqual(set(self.registry()["systems"]), {"basesys", "hb"})
-        self.assertEqual(bi.prune_registry(self.root, self.index, ()), (["hb"], {}, None))   # undeclared root: gone
+        self.assertEqual(bi.prune_registry(self.root, self.index, ()), (["hb"], {}, None, {}))   # undeclared root: gone
 
 
 # ================================================================ manifests: legacy defaults and the layer fields
@@ -1082,8 +1084,8 @@ class TestAllSystemsSafety(Tmp):
         self.build(make_layer(self.root, module="aa2", dirname="Aa2", kind="homebrew", extends="hb"))
         base.unlink()
         hb.unlink()
-        gone, held, refused = bi.prune_registry(self.root, self.index, (PRIVATE,))
-        self.assertEqual((gone, held, refused), ([], {"basesys": ["hb"], "hb": ["aa2"]}, None))
+        self.assertEqual(bi.prune_registry(self.root, self.index, (PRIVATE,)),
+                         ([], {"basesys": ["hb"], "hb": ["aa2"]}, None, {}))
         self.assertEqual(set(self.registry()["systems"]), {"basesys", "hb", "aa2"})
 
     def test_an_empty_discovery_unregisters_nothing(self):
@@ -1097,6 +1099,107 @@ class TestAllSystemsSafety(Tmp):
         self.assertIn("[!] Not pruned: no index.cfg was found under Game_Systems or the private roots, but 2 "
                       "module(s) are registered", out)
         self.assertEqual((self.registry_bytes(), self.generations()), (before, gens))
+
+    # --- B2's folder variant (2026-11-15): a folder that became a link is refused, not absent
+
+    def away(self, folder: Path) -> Path:
+        """Move `folder` out of the corpus and leave a junction to it in its place."""
+        out = Path(self._tmp.name) / "away" / folder.name
+        out.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(folder, out)
+        link_dir(self, folder, out)
+        return out
+
+    def test_a_module_folder_turned_junction_stays_registered(self):
+        self.build(make_base(self.root))
+        self.build(make_base(self.root, dirname="Other", module="other"))
+        gen = self.db("basesys")
+        self.away(self.root / "Game_Systems" / "Basesys")
+        code, out = self.run_all()
+        self.assertEqual(code, 1)
+        self.assertIn("[!] Still registered: basesys — Game_Systems/Basesys resolves outside Game_Systems (through a "
+                      "link or junction), so its index.cfg cannot be read, and a link is not taken for a removal.", out)
+        self.assertNotIn("Unregistered", out)
+        self.assertEqual(set(self.registry()["systems"]), {"basesys", "other"})
+        self.assertTrue(gen.exists())                                    # its generation was not collected
+        os.rmdir(self.root / "Game_Systems" / "Basesys")                 # removes the junction, not its target
+        code, out = self.run_all()                                       # now it really is gone
+        self.assertEqual(code, 0)
+        self.assertIn("Unregistered (index.cfg removed): basesys", out)
+        self.assertEqual(set(self.registry()["systems"]), {"other"})
+
+    def test_an_index_cfg_turned_link_stays_registered(self):
+        self.build(make_base(self.root))
+        self.build(make_base(self.root, dirname="Other", module="other"))
+        (cfg := self.root / "Game_Systems" / "Basesys" / "index.cfg").unlink()
+        link_dir(self, cfg, Path(self._tmp.name) / "cfg_target")        # a junction named index.cfg, leading out
+        gone, held, refused, unreachable = bi.prune_registry(self.root, self.index, (PRIVATE,))
+        self.assertEqual((gone, held, refused), ([], {}, None))
+        self.assertEqual(unreachable, {"basesys": "Game_Systems/Basesys/index.cfg resolves outside its folder "
+                                                  "(through a link)"})
+
+    def test_a_dangling_junction_is_still_a_link(self):
+        self.build(make_base(self.root))
+        self.build(make_base(self.root, dirname="Other", module="other"))
+        shutil.rmtree(self.away(self.root / "Game_Systems" / "Basesys"))
+        self.assertFalse((self.root / "Game_Systems" / "Basesys").exists())
+        self.assertEqual(bi.prune_registry(self.root, self.index, (PRIVATE,))[:2], ([], {}))
+        self.assertEqual(set(self.registry()["systems"]), {"basesys", "other"})
+
+    def test_what_an_unreachable_module_depends_on_stays_too(self):
+        base = make_base(self.root)
+        self.build(base)
+        self.build(make_layer(self.root, relations=relation()))
+        self.build(make_base(self.root, dirname="Other", module="other"))
+        base.unlink()                                                    # basesys really removed
+        self.away(self.root / PRIVATE / "Hb")                            # hb only behind a junction
+        gone, held, refused, unreachable = bi.prune_registry(self.root, self.index, (PRIVATE,))
+        self.assertEqual((gone, held, refused), ([], {"basesys": ["hb"]}, None))
+        self.assertEqual(list(unreachable), ["hb"])
+        self.assertIn("World_Building/Rules_Layers/Hb resolves outside World_Building/Rules_Layers", unreachable["hb"])
+        self.assertEqual(set(self.registry()["systems"]), {"basesys", "hb", "other"})
+
+    def test_a_private_root_turned_junction_holds_its_modules(self):
+        self.build(make_base(self.root))
+        self.build(make_layer(self.root))
+        self.away(self.root / PRIVATE)
+        code, out = self.run_all()                                       # Game_Systems is still discovered
+        self.assertEqual(code, 1)
+        self.assertIn("[!] Still registered: hb — World_Building/Rules_Layers resolves outside the corpus", out)
+        self.assertEqual(set(self.registry()["systems"]), {"basesys", "hb"})
+
+    def test_the_recorded_folder_counts_only_under_a_discovery_root(self):
+        self.build(make_base(self.root))
+        self.build(make_base(self.root, dirname="Other", module="other"))
+        reg = self.registry()
+        reg["systems"]["basesys"]["module_dir"] = "Elsewhere/Basesys"     # an edited registry, pointing at a link
+        si.write_registry(self.sdir, reg)
+        link_dir(self, self.root / "Elsewhere" / "Basesys", Path(self._tmp.name) / "elsewhere_target")
+        (self.root / "Game_Systems" / "Basesys" / "index.cfg").unlink()
+        entry = reg["systems"]["basesys"]
+        for rel in ("Elsewhere/Basesys", "Game_Systems/../Elsewhere/Basesys", "Game_Systems/Basesys/deeper", "", None):
+            self.assertIsNone(si.unreachable_folder(self.root, dict(entry, module_dir=rel), (PRIVATE,)), rel)
+        self.assertEqual(bi.prune_registry(self.root, self.index, (PRIVATE,)), (["basesys"], {}, None, {}))
+
+    def test_a_plain_folder_without_its_index_cfg_is_absent(self):
+        self.build(make_base(self.root))
+        entry = self.registry()["systems"]["basesys"]
+        self.assertIsNone(si.unreachable_folder(self.root, entry, (PRIVATE,)))
+        (self.root / "Game_Systems" / "Basesys" / "index.cfg").unlink()
+        self.assertIsNone(si.unreachable_folder(self.root, entry, (PRIVATE,)))
+        shutil.rmtree(self.root / "Game_Systems" / "Basesys")
+        self.assertIsNone(si.unreachable_folder(self.root, entry, (PRIVATE,)))
+
+    def test_system_says_why_a_registered_folder_is_not_read(self):
+        self.build(make_base(self.root))
+        self.away(self.root / "Game_Systems" / "Basesys")
+        out = io.StringIO()
+        with mock.patch("sys.stdout", out):
+            code = bi.run_systems(mock.Mock(all_systems=False, system="basesys", no_vectors=True), self.root,
+                                  self.index, (PRIVATE,))
+        self.assertEqual(code, 1)
+        self.assertIn("for module 'basesys': Game_Systems/Basesys resolves outside Game_Systems (through a link or "
+                      "junction), so it is not read; make it a plain folder inside the corpus", out.getvalue())
 
     def test_all_systems_claims_a_module_exactly_as_system_does(self):
         make_base(self.root, dirname="Foo", module="bar")                # Foo/ declares bar
@@ -1384,8 +1487,8 @@ class TestSystemsDirAnchor(Tmp):
         with self.assertRaisesRegex(si.SystemIndexError, "resolves outside the corpus"):
             bi.relations_report(self.root, self.index, "hb", (PRIVATE,))
         base.unlink()
-        gone, held, refused = bi.prune_registry(self.root, self.index, (PRIVATE,))
-        self.assertEqual((gone, held), ([], {}))
+        gone, held, refused, unreachable = bi.prune_registry(self.root, self.index, (PRIVATE,))
+        self.assertEqual((gone, held, unreachable), ([], {}, {}))
         self.assertIn("resolves outside the corpus", refused)
         self.assertEqual(sorted(p.name for p in self.outside().iterdir()), before)   # nothing collected out there
         self.assertTrue(stray.exists())

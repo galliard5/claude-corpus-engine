@@ -89,6 +89,8 @@ a whole document, one section of it, or one dataset record, read from the target
 #   removes only our own lock (B3, B7); sharing violations are retried for SHARING_RETRY_S (B6); collect_garbage
 #   sweeps temp files older than TEMP_STALE_S (B3); read_registry(sdir, root) refuses a systems directory leading
 #   out of the corpus and a registry.json that is a link leading out (systems_dir_problem, N1).
+# changed 2026-11-15: unreachable_folder — tells a registered module whose folder became a link leading out apart
+#   from one that is gone, from the registry's module_dir, so pruning keeps the first (B2's folder variant).
 """
 
 import fnmatch
@@ -986,6 +988,43 @@ def discover(root: Path, private_roots=()) -> list:
         found += [p for p in sorted(base.glob("*/index.cfg"))
                   if _inside(p.parent, base_r) and _inside(p, p.parent.resolve())]
     return found
+
+
+def unreachable_folder(root: Path, entry: dict, private_roots=()):
+    """Why a registered module's folder is present but refused by containment, or None when it is reachable or simply
+    gone (audit B2, the "refused rather than absent" variant).
+
+    discover treats a folder that leads out exactly as it treats a missing one, which is right for reading: nothing
+    beyond the link is opened. But it let pruning unregister a module, and delete its generation and embedding cache,
+    because its folder had turned into a junction: a transient or mistaken link, not a retirement. This tells the two
+    apart from the registry's recorded module_dir. That path is used only to keep a registration, never to read
+    anything: only metadata is consulted (whether the name exists, where it resolves), as discover itself does.
+
+    The recorded folder counts only when it lies lexically inside a current discovery root (Game_Systems or a declared
+    private root) and names a folder directly under it, so a module whose private root was undeclared is still gone,
+    and an edited registry cannot hold a module through a path elsewhere. It is unreachable when its discovery root
+    leads out of the corpus (judged first, so nothing beyond that link is looked at), or when the folder exists
+    (lexists: a dangling link counts) and it or its index.cfg resolves out of the level above it."""
+    rel = entry.get("module_dir") if isinstance(entry, dict) else None
+    if not isinstance(rel, str) or not rel:
+        return None
+    root = Path(root)
+    folder = root / rel                     # lexical: a ".." step never equals a discovery root, so it never holds
+    for base in _layer_bases(root, private_roots):
+        if folder.parent != base:
+            continue
+        name = f"{base.relative_to(root).as_posix()}/{folder.name}"
+        if os.path.lexists(base) and not _inside(base, root):    # judged before anything beyond it is looked at
+            return f"{base.relative_to(root).as_posix()} resolves outside the corpus (through a link or junction)"
+        if not os.path.lexists(folder):
+            return None
+        if not _inside(folder, base):
+            return f"{name} resolves outside {base.relative_to(root).as_posix()} (through a link or junction)"
+        cfg = folder / "index.cfg"
+        if os.path.lexists(cfg) and not _inside(cfg, folder):
+            return f"{name}/index.cfg resolves outside its folder (through a link)"
+        return None
+    return None
 
 
 def declared_module(cfg_path: Path):

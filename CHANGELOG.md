@@ -83,9 +83,15 @@ while it stays rare.
 - **Path comparisons ignore case on every platform.** An adaptation profile's `built_against` and `homebrew` paths
   are matched case-insensitively in the container too, as they already were on Windows, so the two no longer
   disagree about whether a profile is current.
+- **`--all-systems` no longer unregisters a module because its folder became a link.** A module folder, its
+  `index.cfg` or a whole private root that turned into a junction leading out of the corpus used to be treated as
+  removed: the run unregistered the module and deleted its database and embedding cache, with exit 0. Such a module
+  now stays registered, and the run says which link is the cause and exits 1. Make it a plain folder again, or
+  remove it to retire the module. `--system` for that module now names the link instead of reporting no
+  `index.cfg`.
 
 The search fixes are server-side and reach chat once the image is rebuilt (`docker compose up -d --build
-corpus-search` from `Python/`). The builder fixes (the lock, the temp files, the loaded parent, the anchored index)
+corpus-search` from `Python/`). The builder fixes (the lock, the temp files, the loaded parent, the anchored index, the pruning guard)
 also reach `rebuild_indexes` from chat only after `docker compose up -d --build index-tools`; a build run on the host
 picks them up at once. The tool surface is unchanged.
 

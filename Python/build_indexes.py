@@ -86,6 +86,9 @@ Replaces: build_directory_indexes.py + build_search_index.py
 #   passes not_searched through run_systems and run_relations. Every registry read before the lock passes the corpus
 #   root, and prune checks the systems directory before taking the lock, so an index/systems leading out of the
 #   corpus refuses before anything is read or written there (N1). The lock and temp-file fixes are in system_index.
+# changed 2026-11-15: B2's folder variant. prune_registry returns (unregistered, held, refused, unreachable) and keeps
+#   a module whose recorded folder, index.cfg or discovery root now leads out of the corpus (unreachable_folder),
+#   which --all-systems reports as a failure; --system names that cause instead of "no index.cfg".
 
 Usage:
     python build_indexes.py                   # reads indexer.cfg, writes all outputs
@@ -1404,32 +1407,52 @@ def _registry_names(sdir: Path, module: str, build_id: str, db_name: str) -> boo
     return isinstance(entry, dict) and entry.get("build_id") == build_id and entry.get("db") == db_name
 
 
-def prune_registry(root: Path, index_dir: Path, private_roots: tuple = ()) -> tuple:
-    """(unregistered, held, refused). Drop registry entries whose module no index.cfg claims any more, then collect
-    their generations. The registry's own cfg path is not trusted for this: only the Game_Systems tree and the
-    declared private roots decide what exists.
+def _unreachable_registered(root: Path, index_dir: Path, module: str, private_roots: tuple = ()):
+    """Why a registered module's folder leads out (system_index.unreachable_folder), or None, for --system's message.
+    Best effort: a registry that cannot be read here just leaves the message as it was."""
+    try:
+        entry = system_index.read_registry(system_index.systems_dir(index_dir), root)["systems"].get(module)
+    except Exception:
+        return None
+    return system_index.unreachable_folder(root, entry, private_roots) if entry else None
 
-    Two guards (audit B1 and B2, 2026-11-14):
+
+def prune_registry(root: Path, index_dir: Path, private_roots: tuple = ()) -> tuple:
+    """(unregistered, held, refused, unreachable). Drop registry entries whose module no index.cfg claims any more,
+    then collect their generations. The registry's own cfg path is not trusted for this: only the Game_Systems tree
+    and the declared private roots decide what exists. The recorded module_dir is consulted for one thing only, to
+    KEEP a registration (below).
+
+    Three guards (audit B1 and B2, 2026-11-14; B2's folder variant 2026-11-15):
     - HELD. A module whose index.cfg is gone stays registered while a module that stays registered depends on it
       (layer.depends_on as published, followed transitively). Unregistering it deleted its generation and left the
       dependent naming a build that no longer exists, with exit 0. `held` maps each such module to its dependents.
     - REFUSED. When discovery finds no index.cfg at all but the registry is not empty, nothing is unregistered. A
       missing, renamed or containment-refused Game_Systems tree is far likelier than every module going at once,
       and pruning would delete every generation along with its embedding cache. `refused` says why; to retire every
-      module on purpose, delete index/systems/registry.json by hand."""
+      module on purpose, delete index/systems/registry.json by hand.
+    - UNREACHABLE. A module whose recorded folder is still there but now leads out of the corpus (the folder, its
+      index.cfg or its whole discovery root turned into a link or junction) stays registered. discover treats it as
+      absent, rightly for reading, but a junction is far likelier to be transient or a mistake than a retirement, and
+      pruning would delete its generation and embedding cache. `unreachable` maps each such module to why
+      (system_index.unreachable_folder); it is unregistered once the folder is removed or made a plain folder again.
+      What it depends on stays registered with it, through the HELD rule."""
     sdir = system_index.systems_dir(index_dir)
     outside = system_index.systems_dir_problem(sdir, root)       # before the lock: nothing is written out there
     if outside:
-        return [], {}, f"{outside}; nothing was pruned"
+        return [], {}, f"{outside}; nothing was pruned", {}
     if not (sdir / system_index.REGISTRY).exists():
-        return [], {}, None
+        return [], {}, None, {}
     with system_index.registry_lock(sdir):
         reg = system_index.read_registry(sdir, root)
         if reg["systems"] and not system_index.discover(root, private_roots):
             return [], {}, (f"no index.cfg was found under Game_Systems or the private roots, but "
                             f"{len(reg['systems'])} module(s) are registered, so nothing was unregistered. If every "
-                            f"module really was removed, delete index/systems/{system_index.REGISTRY} by hand")
+                            f"module really was removed, delete index/systems/{system_index.REGISTRY} by hand"), {}
         unclaimed = {m for m in reg["systems"] if not system_index.cfgs_for(root, m, private_roots)}
+        unreachable = {m: why for m in sorted(unclaimed)
+                       if (why := system_index.unreachable_folder(root, reg["systems"][m], private_roots))}
+        unclaimed -= set(unreachable)
         gone = set(unclaimed)
         while True:
             keep = {d for m, e in reg["systems"].items() if m not in gone for d in _published_deps(e) & gone}
@@ -1446,7 +1469,7 @@ def prune_registry(root: Path, index_dir: Path, private_roots: tuple = ()) -> tu
             system_index.collect_garbage(sdir, reg)
         except Exception:
             pass
-    return sorted(gone), held, None
+    return sorted(gone), held, None, unreachable
 
 
 def _ordered_targets(paths: list) -> tuple:
@@ -1515,7 +1538,9 @@ def run_systems(args, root: Path, index_dir: Path, private_roots: tuple = (), no
             print(f"Error: {e}")
             return 1
         if found is None:
-            print(f"Error: no Game_Systems/*/index.cfg (or private-root layer) for module {name!r}")
+            why = _unreachable_registered(root, index_dir, name, private_roots)
+            print(f"Error: no Game_Systems/*/index.cfg (or private-root layer) for module {name!r}"
+                  + (f": {why}, so it is not read; make it a plain folder inside the corpus" if why else ""))
             return 1
         targets = [found]
 
@@ -1563,10 +1588,15 @@ def run_systems(args, root: Path, index_dir: Path, private_roots: tuple = (), no
                     "vector_failed": s.vector_failed, "error_count": len(s.errors),
                     "invocation": _detect_invocation()})
     if args.all_systems:
-        gone, held, refused = prune_registry(root, index_dir, private_roots)
+        gone, held, refused, unreachable = prune_registry(root, index_dir, private_roots)
         if refused:
             failures += 1
             print(f"\n[!] Not pruned: {refused}.")
+        for module, why in unreachable.items():
+            failures += 1
+            print(f"\n[!] Still registered: {module} — {why}, so its index.cfg cannot be read, and a link is not "
+                  f"taken for a removal. Make it a plain folder inside the corpus again, or remove it to retire "
+                  f"{module}, then run --all-systems again.")
         if gone:
             print(f"\nUnregistered (index.cfg removed): {', '.join(gone)}")
         for module, dependents in held.items():

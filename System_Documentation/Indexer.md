@@ -1,7 +1,7 @@
 ---
 name: Indexer System
 type: documentation-component
-keywords: [indexer, build_indexes, cfg_loader, indexer.cfg, refresh_indexes, rebuild, fts5, sqlite, os.walk, fnmatch]
+keywords: [indexer, build_indexes, cfg_loader, indexer.cfg, refresh_indexes, rebuild, fts5, sqlite, os.walk, fnmatch, rules_layers, relations, layers]
 description: Full reference for the index builder - build_indexes.py, cfg_loader.py, indexer.cfg, index_tools_mcp_server.py, and refresh_indexes.bat.
 ---
 
@@ -130,6 +130,31 @@ The `line_N` sentinel is the cleverest part. Worldographer SVG maps declare thei
 
 Matching is fnmatch glob, last-match-wins. So general patterns should appear before specific ones in the cfg.
 
+### `[rules_layers]` (optional)
+
+Declares where the user's own rules layers live and which modules are loaded into context rather than searched.
+See *Rules layers* below for what a layer is.
+
+```cfg
+[rules_layers]
+private_roots = [Setting]/Rules_Layers
+not_searched = basesys
+```
+
+- `private_roots` — comma-separated corpus-relative folders. Each folder directly under one, with an `index.cfg`, is
+  a module layer discovered alongside `Game_Systems/<dir>/`. The corpus build leaves these roots out of
+  `search_index.db`, so a layer's rules are searched only through its own database, never through lore search. Each
+  root must have at least two path segments, sit outside `Game_Systems/` and the index directory, contain no `..`,
+  and not overlap another root. An existing root may hold only rules-layer folders, so a tree of lore cannot be
+  hidden by mistake. A root that does not exist yet is allowed.
+- `not_searched` — comma-separated module ids that are *declared loaded*: a chain may name them, but they are never
+  searched, and nothing can verify that the caller really has them in context. Each must be a known module.
+- No section means neither, and every output is exactly what it was before layers existed. A section that is
+  present is strict: an unknown key, a line that is not `key = value`, an empty value, or a section declaring
+  neither key fails every build (exit 1) and makes every chain search and chain status refuse, naming the fix.
+  That way a typo cannot silently switch a guarantee off. Plain corpus and single-module search do not read the
+  section.
+
 ## `cfg_loader.py`
 
 Stand-alone generic .cfg parser. Has no knowledge of indexer-specific section names — `build_indexes.py` is what interprets `[paths]`, `[directory_index]`, etc.
@@ -213,7 +238,8 @@ python build_indexes.py --console        # console output, skip file writes (dry
 python build_indexes.py --no-pause       # unattended (used by index-tools and refresh_indexes.bat)
 python build_indexes.py --no-vectors     # FTS5 only, skip the embedding pass
 python build_indexes.py --system MODULE  # one game-system module's database (not the corpus)
-python build_indexes.py --all-systems    # every module with an index.cfg; unregisters removed ones
+python build_indexes.py --all-systems    # every module with an index.cfg, in dependency order; unregisters removed ones
+python build_indexes.py --relations MODULE  # read-only: a layer's declared relations and their pin states
 ```
 
 ### Game-system module databases — `--system` / `--all-systems`
@@ -265,6 +291,84 @@ search server; `Search_Server.md` → *Game-system module databases* documents t
 - `Python/test_system_index.py` is the self-test: fixture modules, every strict-config and record-contract plant,
   publication and concurrency, and a gate proving corpus search output byte-identical to the previous schema on
   one immutable snapshot of the corpus.
+
+### Rules layers — `kind`, `extends`, `relations.yaml`
+
+A rules chain stacks modules: a game system, a variant or third-party supplement built on it, and the user's
+homebrew on top. Each is an ordinary module with its own database. What makes one a *layer* is two optional
+fields in its manifest's fenced YAML block:
+
+```yaml
+kind: homebrew        # system | variant | thirdparty | homebrew; absent = system
+extends: basesys      # required for variant, thirdparty and homebrew
+```
+
+A layer may also have a `relations.yaml` at its module root. That file declares how its entries relate to other
+layers' entries:
+
+```yaml
+- entry:  {key: "doc:rules/warden.md", section: {heading: "Watch duty", level: 2}}
+  target: {layer: basesys, key: "doc:rules/core.md"}
+  mode: override      # override | add | extend | partition | fall_through | n_a
+  status: settled     # derived | settled | open
+  decided: 2026-11-15 # required when settled
+  decider: steward    # required when settled; self-declared, reported as such, never verified
+  target_sha256: "…"  # optional pin of the target's content; quote it
+  note: free text     # optional
+```
+
+Keys are written exactly as a search hit prints them: `doc:<module-relative path>`, or `rec:<dataset>/<record id>`.
+A `section` may narrow a document key to one heading, but a record key takes none. The file is strict: an unknown
+key, a malformed value, or a repeated (entry, target) pair fails the build, naming the item and the fix. The builder
+records declarations as written. Search reports them, and nothing decides which rule governs.
+
+**Legacy and layered.** A module that declares neither `extends` nor relations is *legacy*: schema 2, fingerprinted
+and published exactly as before, so existing modules stay byte-compatible with every reader. A module that declares
+either is *layered*, and builds as schema 3. Schema 3 adds:
+- a `relations` table and a `layer_info` row;
+- a fingerprint that also covers the manifest, the relations, and the build id of every layer it depends on.
+
+A layer's dependencies are its `extends` parent and every layer a relation targets.
+
+**Building a layer.** `--system <layer>` builds against the dependencies' *published* builds, taken from one
+registry snapshot:
+- **Each dependency must be published and consistent.** It must be registered, its generation present, and its own
+  `db_info` must agree with the registry. Otherwise the build refuses, naming the layer to build first.
+- **Every entry and target must exist.** Each entry is checked in the layer's own new database, and each target in
+  its layer's published one. A section must match exactly one heading at its level. An entry or target that does
+  not resolve fails the build, so nothing publishes pointing at nothing. The registry then records the dependencies' build
+  ids as `layer.depends_on`, and chain search warns when a dependency has since been rebuilt.
+- **A parent that is never built is accepted.** An `extends` parent declared under `[rules_layers] not_searched` is
+  loaded by declaration, so the layer builds without it as a dependency. A relation *into* such a module is refused,
+  because with no database its targets cannot be checked.
+- **Cycles are refused.** A cycle through the published `depends_on` is refused, naming the cycle and which layer to
+  rebuild first. `--all-systems` refuses a cycle among the configs as well.
+
+**`--all-systems`** builds every discovered module, in `Game_Systems/` and the private roots, in dependency order. A
+module is claimed exactly as `--system` claims it: by the `index.cfg` that declares it, or by a folder named like
+it. Two claims refuse that module under both flags. After building, the run prunes every registered module that no
+`index.cfg` claims any more, deleting its generation. Three guards apply, and each makes the run exit 1 and say why:
+- **Held:** a module stays registered while a module that stays registered depends on it, following
+  `depends_on` transitively. Rebuild or remove the dependents first.
+- **Nothing discovered:** if no `index.cfg` is found at all but modules are registered, nothing is pruned. A missing
+  or renamed tree is likelier than every module being retired at once. To retire everything on purpose, delete
+  `index/systems/registry.json` by hand.
+- **Unreachable:** a module whose recorded folder is still there but now leads out of the corpus stays registered.
+  That covers the folder, its `index.cfg` or its whole discovery root having become a link or junction. A link is
+  far likelier to be a transient or a mistake than a retirement. The module is unregistered once the folder is
+  removed, or rebuilt once it is a plain folder again, and `--system` names the cause.
+
+**`--relations <layer>`** is read-only. For each declaration it prints the entry, mode and status, the target, any
+self-declared decider, and the pin state:
+- `pinned`: `target_sha256` matches the target's current content;
+- `unpinned`: no pin is declared;
+- `changed`: the target has changed since it was pinned.
+
+It also prints the target's current hash, which is the value to write into `target_sha256`. Entries are resolved
+in the layer's published database and targets in theirs, from one registry snapshot. It builds nothing.
+
+`Search_Server.md` → *Chain-aware search* covers how a chain is resolved and searched; `Python/test_layers.py` and
+`Python/test_chain.py` are the self-tests.
 
 ## `index_tools_mcp_server.py`
 

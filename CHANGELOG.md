@@ -35,6 +35,20 @@ while it stays rare.
 
 ---
 
+## 2026-11-19
+
+### Changed
+
+- **The documented dice server is now `local-table-dice`, with two tools instead of four.** `file_system_instructions.md`
+  lists `dice_roll` and `dice_validate` only; jimmcq's `search` and `fetch` documentation tools are gone. `dice_roll`
+  takes `notation` and an optional `label` and always returns the breakdown, so `verbose` is dropped. The notation adds
+  `d%0` (00–99), exact-face rerolls such as `r1` and `r-1`, and a fixed modifier order: keep/drop, `rN`, `!`, `>N`.
+  The server sends its own usage guide as instructions, and the repo's GM and presentation rules take precedence over
+  it. jimmcq's `dice-rolling-mcp` stays documented as an alternative with the same two tool names, registered under the
+  same `dice-roller` entry. It doesn't support `d%0`, so a campaign that relies on 00–99 rolls should use the new server.
+  Its build step is corrected to `npm run build:mcp`; the previously documented `npm run build` builds its web app, not
+  the server.
+
 ## 2026-11-16
 
 ### Changed

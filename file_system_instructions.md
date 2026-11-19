@@ -80,23 +80,24 @@ notes below say which.
 >
 > **Nothing in this repo hard-depends on SymPy.** Without it, do the arithmetic carefully by hand.
 
-**Dice Tools (4):** dice-roller:dice_roll, dice-roller:dice_validate, dice-roller:search, dice-roller:fetch — real RNG (Node `crypto.randomInt()`, OS CSPRNG) for all in-session dice. **An LLM cannot roll dice; it predicts plausible-looking numbers.** Notation: `1d20+5`, `2d20kh1` (advantage), `2d20kl1` (disadvantage), `4d6dl1` (stat gen), `3d6!` (exploding), `5d10>7` (success counting), `4dF` (Fudge), `1d%`. Pass `label` for readability and `verbose: true` when individual dice matter. `dice_validate` explains notation without rolling.
+**Dice Tools (2):** dice-roller:dice_roll, dice-roller:dice_validate — real RNG (Node `crypto.randomInt()`, OS CSPRNG) for all in-session dice. **An LLM cannot roll dice; it predicts plausible-looking numbers.** Notation: `1d20+5`, `2d20kh1` (advantage), `2d20kl1` (disadvantage), `4d6dl1` (stat gen), `d%` (1–100), `d%0` (00–99), `4dF` (Fate), `4d6r1` (reroll initial 1s once), `3d6!` (exploding), `5d10>7` (counts dice showing 7 or more). Modifiers on one dice term go in the order keep/drop, `rN`, `!`, `>N`. Pass `label` to say what the roll is for; the reply always includes the breakdown. `dice_validate` explains notation in plain English without rolling. The server sends its full usage guide (hidden rolls, error handling, presenting results) as its instructions and as the resource `dice://usage`. **Where this repo's GM and presentation rules differ from that guide, this repo's rules win.**
 
-> **Source:** `dice-rolling-mcp` by Jim McQuillan — https://github.com/jimmcq/dice-rolling-mcp (ISC, TypeScript, Node 18+).
-> ```cmd
-> git clone https://github.com/jimmcq/dice-rolling-mcp
-> cd dice-rolling-mcp
-> npm install
-> npm run build
-> ```
-> Then add to `claude_desktop_config.json`:
+> **Source:** `local-table-dice`, the maintainer's own dice roller (Node 18+, no dependencies, nothing to build). Not yet published.
+> Add to `claude_desktop_config.json`, with Claude Desktop fully quit (it writes its in-memory config back on quit,
+> discarding edits made while it runs):
 > ```json
 > "dice-roller": {
 >   "command": "node",
->   "args": ["path/to/dice-rolling-mcp/dist/index.js"]
+>   "args": ["path/to/local-table-dice/mcp/server.mjs"]
 > }
 > ```
-> A hosted endpoint also exists at `https://dice-rolling-mcp.vercel.app/mcp` for remote-connector use.
+> Keep the entry name `dice-roller` so the tool names above hold.
+>
+> **Alternative:** `dice-rolling-mcp` by Jim McQuillan — https://github.com/jimmcq/dice-rolling-mcp (ISC, TypeScript).
+> It exposes the same two tools plus `search` and `fetch`, has no `d%0`, and returns the breakdown only with
+> `verbose: true`. Build with `npm install` then `npm run build:mcp` (plain `npm run build` builds its web app, not the
+> server) and register `path/to/dice-rolling-mcp/dist/index.js`. On Windows, upstream `master` starts and then serves
+> nothing; the fix is in its open pull request #108.
 >
 > **`Core_Rules/epistemics.md` > *Never assert what you did not obtain* depends on this server.** Read that section's
 > fallback note before running a session without it.
@@ -133,7 +134,7 @@ STARTUP PROCEDURES — EXECUTE ON EVERY CONVERSATION START
 
 **[FIRST] Preload all MCP tools (prevents deferred-tool load errors on first calls):**
 Call `tool_search("filesystem read write edit corpus index series search record sympy math dice roll")` immediately at session start.
-This loads all 14 filesystem tools, 4 corpus-search tools, 1 index-tools tool, 3 series-search tools, the sympy math tools, and the 4 dice-roller tools into the registry so they're ready for immediate use. Zero cost after first call; eliminates the red parameter-error on initial tool invocations.
+This loads all 14 filesystem tools, 4 corpus-search tools, 1 index-tools tool, 3 series-search tools, the sympy math tools, and the 2 dice-roller tools into the registry so they're ready for immediate use. Zero cost after first call; eliminates the red parameter-error on initial tool invocations.
 
 **Root:** `/corpus` (Docker container path) — ALL MCP file operations confined here. No exceptions.
 **Host path:** `D:\claude\filesystem\` — use this for git, CMD, and native Windows tools.

@@ -87,13 +87,19 @@ Then restart Claude Desktop — `mcp-remote` doesn't auto-reconnect when a conta
 
 **2. On a packaged install, the documented path exists only while Desktop runs.** Claude Desktop may be installed as an MSIX/Store package. In that case `%APPDATA%\Claude` is a redirection into the package's private storage, present while the app runs and **gone once it exits**. So the obvious remedy for fault 1 — quit, then edit `%APPDATA%\Claude\claude_desktop_config.json` — is self-defeating: quitting removes the path the instruction names. A reader finds no file where everything says one should be and concludes something is broken.
 
-The real file on a packaged install:
+The real file on a packaged install has **moved between Desktop versions**. Builds current in September 2026 kept it at:
 
 ```
 %LOCALAPPDATA%\Packages\Claude_<publisherid>\LocalCache\Roaming\Claude\claude_desktop_config.json
 ```
 
-`Claude_<publisherid>` is the MSIX package family name — constant for a given build of the app, not per-user; only the `C:\Users\<you>` portion varies. A non-packaged (`.exe` installer) install uses `%APPDATA%\Claude` directly and has neither problem with the path, though fault 1 still applies.
+By November 2026 (Desktop 6.6395), that path was gone and the live file was at:
+
+```
+%LOCALAPPDATA%\Claude-Data\claude_<publisherid>\claude_desktop_config.json
+```
+
+Treat both as examples, not addresses. That is why the fix below searches instead of naming a path. `<publisherid>` comes from the MSIX package family name. It's constant for a given build of the app, not per-user; only the `C:\Users\<you>` portion varies. A non-packaged (`.exe` installer) install uses `%APPDATA%\Claude` directly and has neither problem with the path, though fault 1 still applies.
 
 **Fix — works on both install types:**
 
